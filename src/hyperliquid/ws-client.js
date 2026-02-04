@@ -23,6 +23,8 @@ class HyperliquidWS extends EventEmitter {
     this.maxReconnectDelay = 30000; // 30 seconds
     this.isExplicitClose = false;
     this.reconnectTimer = null;
+    this.syncTimer = null;
+    this.syncInterval = 5 * 60 * 1000; // 5 minutes
   }
 
   connect() {
@@ -41,7 +43,10 @@ class HyperliquidWS extends EventEmitter {
       this.startHeartbeat();
       
       // Perform Initial Sync of Open Orders
-      this.syncInitialOrders();
+      this.syncOrders('Initial');
+      
+      // Start Periodic Sync
+      this.startPeriodicSync();
     });
 
 
@@ -56,6 +61,7 @@ class HyperliquidWS extends EventEmitter {
 
     this.ws.on('close', () => {
       this.stopHeartbeat();
+      this.stopPeriodicSync();
       if (this.isExplicitClose) {
          logger.info('Hyperliquid WebSocket closed explicitly.');
          return;
@@ -97,6 +103,7 @@ class HyperliquidWS extends EventEmitter {
       this.reconnectTimer = null;
     }
     this.stopHeartbeat();
+    this.stopPeriodicSync();
     if (this.ws) {
       this.ws.close();
     }
@@ -133,10 +140,10 @@ class HyperliquidWS extends EventEmitter {
     });
   }
 
-  async syncInitialOrders() {
+  async syncOrders(type = 'Initial') {
     if (this.followedUsers.length === 0) return;
 
-    logger.info('Starting initial sync of open orders...');
+    logger.info(`Starting ${type} sync of open orders...`);
 
     // 1. Fetch Binance Open Orders (Snapshot)
     let binanceOpenOrders = [];
@@ -173,14 +180,14 @@ class HyperliquidWS extends EventEmitter {
         const hlOrderIds = new Set();
 
         if (Array.isArray(hlOpenOrders)) {
-          logger.info(`Found ${hlOpenOrders.length} existing open orders for ${user}. Syncing...`);
+          logger.info(`[${type}] Found ${hlOpenOrders.length} existing open orders for ${user}. Syncing...`);
           
           // --- Phase 0: Pre-Sync Risk Check ---
           // Run ExposureManager BEFORE syncing HL orders to ensure the "Reduce Half" safety net
           // gets priority on the Binance position quota.
-          logger.info(`[Sync] Running pre-sync risk check for ${user}...`);
+          logger.info(`[${type}] Running pre-sync risk check for ${user}...`);
           await Promise.all([
-            exposureManager.checkAndRebalance('BTC', user).catch(err => logger.error(`[Sync] Pre-sync rebalance failed for BTC`, err)),
+            exposureManager.checkAndRebalance('BTC', user).catch(err => logger.error(`[${type}] Pre-sync rebalance failed for BTC`, err)),
             exposureManager.checkAndRebalance('ETH', user).catch(err => {}),
             exposureManager.checkAndRebalance('SOL', user).catch(err => {})
           ]);
@@ -210,7 +217,7 @@ class HyperliquidWS extends EventEmitter {
               if (binanceOrderIdMap.has(existingMapping.orderId.toString())) {
                 // Perfect Sync: Mapped AND Active on Binance.
                 // DO NOT EMIT. This prevents duplicates definitively.
-                logger.debug(`[Sync] Order ${order.oid} already synced and active on Binance (${existingMapping.orderId}). Skipping.`);
+                logger.debug(`[${type}] Order ${order.oid} already synced and active on Binance (${existingMapping.orderId}). Skipping.`);
                 continue;
               } else {
                 // Mapping exists, but Binance Order is MISSING from OpenOrders.
@@ -218,7 +225,7 @@ class HyperliquidWS extends EventEmitter {
                 // We should probably allow re-creation (Emit), or treat as Orphan drift.
                 // Given the user wants "Copy", if HL has it open, we should probably have it open.
                 // So we fall through to Emit.
-                logger.info(`[Sync] Order ${order.oid} mapped but not found in Binance OpenOrders. Retrying sync (creating new)...`);
+                logger.info(`[${type}] Order ${order.oid} mapped but not found in Binance OpenOrders. Retrying sync (creating new)...`);
                 // Clean old mapping to allow new creation logic to run cleanly if needed
                 await orderMapper.deleteMapping(order.oid); 
               }
@@ -247,7 +254,7 @@ class HyperliquidWS extends EventEmitter {
                 const matchedOrder = candidates[matchIndex];
                 candidates.splice(matchIndex, 1); // Consume candidate
 
-                logger.info(`[Sync] Recovered mapping: HL ${order.oid} <-> Binance ${matchedOrder.orderId}`);
+                logger.info(`[${type}] Recovered mapping: HL ${order.oid} <-> Binance ${matchedOrder.orderId}`);
 
                 await orderMapper.saveMapping(order.oid, matchedOrder.orderId, symbol);
                 await consistencyEngine.markOrderProcessed(order.oid, {
@@ -261,16 +268,16 @@ class HyperliquidWS extends EventEmitter {
                 // Remove from map to prevent Pruning later (though Pruning checks Redis, so it's fine)
                 continue; // Skip Emit
               } else {
-                 logger.debug(`[Sync] No match found for HL ${order.oid} (${order.coin} ${order.side} ${hlPriceFormatted}). Candidates: ${candidates.length}`);
+                 logger.debug(`[${type}] No match found for HL ${order.oid} (${order.coin} ${order.side} ${hlPriceFormatted}). Candidates: ${candidates.length}`);
               }
             }
             
             // C. Create New
-            logger.info(`[Sync] Processing NEW order for HL ${order.oid}`);
+            logger.info(`[${type}] Processing NEW order for HL ${order.oid}`);
             try {
               await orderExecutor.executeLimitOrder(standardizedOrder, true); // Skip rebalance during sync
             } catch (err) {
-              logger.error(`[Sync] Failed to process initial order ${order.oid}`, err);
+              logger.error(`[${type}] Failed to process initial order ${order.oid}`, err);
             }
           } // End Phase 1 Loop
 
@@ -289,18 +296,18 @@ class HyperliquidWS extends EventEmitter {
                   // It is a Follow order.
                   // Check if the Master Order still exists
                   if (!hlOrderIds.has(mappedHlOid.toString())) {
-                    logger.info(`[Sync] Pruning Zombie Binance Order ${bOrder.orderId} (HL ${mappedHlOid} no longer open).`);
+                    logger.info(`[${type}] Pruning Zombie Binance Order ${bOrder.orderId} (HL ${mappedHlOid} no longer open).`);
                     
                     try {
                       await binanceClient.cancelOrder(bOrder.symbol, bOrder.orderId);
                       await orderMapper.deleteMapping(mappedHlOid);
                     } catch (err) {
-                      logger.warn(`[Sync] Failed to prune order ${bOrder.orderId}`, err);
+                      logger.warn(`[${type}] Failed to prune order ${bOrder.orderId}`, err);
                     }
                   }
                 }
               } catch (err) {
-                logger.error(`[Sync] Error processing prune for ${bOrder.orderId}`, err);
+                logger.error(`[${type}] Error processing prune for ${bOrder.orderId}`, err);
               }
             }));
           }
@@ -311,6 +318,23 @@ class HyperliquidWS extends EventEmitter {
       } catch (error) {
         logger.error(`Failed to fetch initial orders for ${user}`, error);
       }
+    }
+  }
+
+  startPeriodicSync() {
+    if (this.syncTimer) return;
+    logger.info(`Starting periodic sync (Interval: ${this.syncInterval}ms)`);
+    this.syncTimer = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.syncOrders('Periodic');
+      }
+    }, this.syncInterval);
+  }
+
+  stopPeriodicSync() {
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = null;
     }
   }
 
