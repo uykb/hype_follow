@@ -8,6 +8,7 @@ const binanceClient = require('../binance/api-client');
 const orderMapper = require('../core/order-mapper');
 const orderExecutor = require('../core/order-executor');
 const exposureManager = require('../core/exposure-manager');
+const consistencyEngine = require('../core/consistency-engine');
 
 class HyperliquidWS extends EventEmitter {
   constructor() {
@@ -169,6 +170,11 @@ class HyperliquidWS extends EventEmitter {
       logger.warn('Failed to fetch Binance open orders. Sync/Pruning will be limited.', err);
     }
 
+    // Track ALL HL Open Orders across ALL users to avoid accidental pruning in multi-user setup
+    const allHlOpenOrderIds = new Set();
+    // We also need an API client for status checks
+    const apiClient = require('./api-client'); 
+
     for (const user of this.followedUsers) {
       try {
         const response = await axios.post('https://api.hyperliquid.xyz/info', {
@@ -177,11 +183,13 @@ class HyperliquidWS extends EventEmitter {
         });
 
         const hlOpenOrders = response.data;
-        const hlOrderIds = new Set();
 
         if (Array.isArray(hlOpenOrders)) {
           logger.info(`[${type}] Found ${hlOpenOrders.length} existing open orders for ${user}. Syncing...`);
           
+          // Add to global set for pruning phase
+          hlOpenOrders.forEach(o => allHlOpenOrderIds.add(o.oid.toString()));
+
           // --- Phase 0: Pre-Sync Risk Check ---
           // Run ExposureManager BEFORE syncing HL orders to ensure the "Reduce Half" safety net
           // gets priority on the Binance position quota.
@@ -194,8 +202,6 @@ class HyperliquidWS extends EventEmitter {
 
           // --- Phase 1: Sync HL -> Binance (Create / Verify) ---
           for (const order of hlOpenOrders) {
-            hlOrderIds.add(order.oid.toString()); // Track for Pruning Phase
-
             // Standardize
             const standardizedOrder = {
               type: 'order',
@@ -281,42 +287,81 @@ class HyperliquidWS extends EventEmitter {
             }
           } // End Phase 1 Loop
 
-          // --- Phase 2: Prune Binance -> HL (Cancel Zombie Orders) ---
-          // Iterate all Binance Open Orders. If they map to an HL Order that is NOT in hlOrderIds, Cancel them.
-          
-          const pruneBatchSize = 5;
-          for (let i = 0; i < binanceOpenOrders.length; i += pruneBatchSize) {
-            const batch = binanceOpenOrders.slice(i, i + pruneBatchSize);
-            await Promise.all(batch.map(async (bOrder) => {
-              try {
-                // Check if this Binance Order is a "Follow" order (has mapping)
-                const mappedHlOid = await orderMapper.getHyperliquidOrder(bOrder.orderId);
+        }
+      } catch (err) {
+        logger.error(`[${type}] Error syncing orders for user ${user}`, err);
+      }
+    } // End User Loop
+
+    // --- Phase 2: Prune Binance -> HL (Cancel Zombie Orders) ---
+    // Iterate all Binance Open Orders. If they map to an HL Order that is NOT in allHlOpenOrderIds, Check Status & Cancel if truly dead.
+    
+    if (binanceOpenOrders.length > 0) {
+      const pruneBatchSize = 5;
+      for (let i = 0; i < binanceOpenOrders.length; i += pruneBatchSize) {
+        const batch = binanceOpenOrders.slice(i, i + pruneBatchSize);
+        await Promise.all(batch.map(async (bOrder) => {
+          try {
+            // Check if this Binance Order is a "Follow" order (has mapping)
+            const mappedHlOid = await orderMapper.getHyperliquidOrder(bOrder.orderId);
+            
+            if (mappedHlOid) {
+              // It is a Follow order.
+              // Check if the Master Order still exists in OPEN orders
+              if (!allHlOpenOrderIds.has(mappedHlOid.toString())) {
                 
-                if (mappedHlOid) {
-                  // It is a Follow order.
-                  // Check if the Master Order still exists
-                  if (!hlOrderIds.has(mappedHlOid.toString())) {
-                    logger.info(`[${type}] Pruning Zombie Binance Order ${bOrder.orderId} (HL ${mappedHlOid} no longer open).`);
+                // CRITICAL: Double-check if it was FILLED/TRIGGERED recently (not just canceled)
+                // If filled, we should NOT cancel the Binance order, but let it fill or handle otherwise.
+                let isFilled = false;
+                let isConfirmedCanceled = false;
+
+                // We don't know which user owns this order easily, so we check all followed users
+                for (const user of this.followedUsers) {
+                  const statusInfo = await apiClient.getOrderStatus(user, mappedHlOid);
+                  if (statusInfo && statusInfo.status === 'order') {
+                    // statusInfo.order.status can be: 'open', 'filled', 'canceled', 'triggered', 'rejected', 'marginCanceled'
+                    const actualStatus = statusInfo.order.status;
                     
-                    try {
-                      await binanceClient.cancelOrder(bOrder.symbol, bOrder.orderId);
-                      await orderMapper.deleteMapping(mappedHlOid);
-                    } catch (err) {
-                      logger.warn(`[${type}] Failed to prune order ${bOrder.orderId}`, err);
+                    if (actualStatus === 'filled' || actualStatus === 'triggered') {
+                      isFilled = true;
+                      logger.warn(`[${type}] Mismatch: HL Order ${mappedHlOid} is ${actualStatus} but Binance is OPEN. Keeping Binance order to allow catch-up.`);
+                      break; 
+                    } else if (actualStatus === 'canceled' || actualStatus === 'rejected' || actualStatus === 'marginCanceled') {
+                      isConfirmedCanceled = true;
+                      break;
+                    } else if (actualStatus === 'open') {
+                       // Should have been in allHlOpenOrderIds... odd, but treat as alive
+                       logger.warn(`[${type}] HL Order ${mappedHlOid} is OPEN but missed in snapshot? Keeping.`);
+                       isFilled = true; // Treat as "alive"
+                       break;
                     }
+                  } else if (statusInfo && statusInfo.status === 'unknownOid') {
+                    // It really doesn't exist. Likely canceled a long time ago.
+                    // Continue checking other users or assume canceled?
+                    // If we check all users and all say unknown, it's canceled.
                   }
                 }
-              } catch (err) {
-                logger.error(`[${type}] Error processing prune for ${bOrder.orderId}`, err);
-              }
-            }));
-          }
 
-        } else {
-          logger.info(`No existing open orders found for ${user}.`);
-        }
-      } catch (error) {
-        logger.error(`Failed to fetch initial orders for ${user}`, error);
+                if (isFilled) {
+                   return; // Do NOT cancel
+                }
+
+                // If we are here, it's either explicitly canceled OR unknown (zombie)
+                logger.info(`[${type}] Pruning Zombie Binance Order ${bOrder.orderId} (HL ${mappedHlOid} status verified as closed/unknown).`);
+                
+                try {
+                   await binanceClient.cancelOrder(bOrder.symbol, bOrder.orderId);
+                   // Clean up mapping
+                   await orderMapper.deleteMapping(mappedHlOid);
+                } catch (cancelErr) {
+                   logger.warn(`[${type}] Failed to cancel zombie order ${bOrder.orderId}`, cancelErr);
+                }
+              }
+            }
+          } catch (err) {
+            logger.error(`[${type}] Error checking/pruning order ${bOrder.orderId}`, err);
+          }
+        }));
       }
     }
   }

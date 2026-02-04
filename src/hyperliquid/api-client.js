@@ -49,6 +49,26 @@ class HyperliquidAPIClient {
       return [];
     }
   }
+
+  /**
+   * Get specific order status
+   * @param {string} address User address
+   * @param {number|string} oid Order ID
+   * @returns {Promise<object|null>} Order status info or null
+   */
+  async getOrderStatus(address, oid) {
+    try {
+      const response = await axios.post(this.baseUrl, {
+        type: 'orderStatus',
+        user: address,
+        oid: parseInt(oid)
+      });
+      return response.data;
+    } catch (error) {
+      logger.warn(`Failed to get order status for ${oid}`, error.message);
+      return null;
+    }
+  }
 }
 
 module.exports = new HyperliquidAPIClient();
