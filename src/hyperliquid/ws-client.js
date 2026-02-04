@@ -302,6 +302,12 @@ class HyperliquidWS extends EventEmitter {
         const batch = binanceOpenOrders.slice(i, i + pruneBatchSize);
         await Promise.all(batch.map(async (bOrder) => {
           try {
+            // Safety: Skip Reduce-Only orders (often manual TP/SL or safety orders)
+            // These should never be pruned automatically as they might be user-managed.
+            if (bOrder.reduceOnly) {
+              return;
+            }
+
             // Check if this Binance Order is a "Follow" order (has mapping)
             const mappedHlOid = await orderMapper.getHyperliquidOrder(bOrder.orderId);
             
