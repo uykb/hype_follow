@@ -1,101 +1,137 @@
 # HypeFollow Agent Guidelines
 
-This document provides instructions and guidelines for AI agents working on the HypeFollow repository.
+This document provides comprehensive instructions for AI agents (and human developers) working on the HypeFollow repository.
+It covers build commands, code style, architecture, and workflow rules to ensure consistency and stability.
 
 ## 1. Build, Lint, and Test Commands
 
-### Running the Application
-*   **Start Backend**: `npm start` (Runs `src/index.js`)
-*   **Development Mode**: `npm run dev` (Uses `nodemon` for auto-restart)
-*   **Start Monitoring Server**: `npm run monitor` (Runs `src/monitoring/api-server.js`)
+### Backend (Root)
+The backend is a Node.js application responsible for mirroring Hyperliquid orders to Binance.
 
-### Testing
-There is no centralized test runner like Jest configured in `package.json`. Tests are standalone Node.js scripts located in the `tests/` directory.
+*   **Install Dependencies**: `npm install`
+*   **Start Application**:
+    *   `npm start`: Runs `src/index.js` (Production mode).
+    *   `npm run dev`: Runs `src/index.js` with `nodemon` for auto-restarts (Development).
+    *   `npm run monitor`: Runs the status monitoring server (`src/monitoring/api-server.js`).
 
-*   **Run a specific test**:
+### Testing (Backend)
+There is **no centralized test runner** (like Jest/Mocha) configured in `package.json`.
+Tests are standalone scripts in the `tests/` directory using the built-in `assert` module.
+
+*   **Run All Tests**: There is no single command. You must run them individually.
+*   **Run a Single Test**:
     ```bash
     node tests/test-calculation.js
     node tests/test-api-security.js
     node tests/test-order-validation.js
     ```
-*   **Creating new tests**: Create a new `.js` file in `tests/`, require necessary modules (mocking dependencies where needed), and use the built-in `assert` module.
+*   **Creating Tests**:
+    *   Create a new file in `tests/` (e.g., `tests/test-new-feature.js`).
+    *   Use `require('assert')` for assertions.
+    *   **CRITICAL**: You must mock external dependencies (Redis, Binance, Hyperliquid) using standard JS replacement or proxying. Do not make real API calls in tests.
 
 ### Dashboard (Frontend)
-The `dashboard/` directory contains a React application (likely Vite-based).
-*   **Build Dashboard**: `cd dashboard && npm run build`
-*   **Dev Dashboard**: `cd dashboard && npm run dev`
-*   **Lint Dashboard**: Check `dashboard/package.json` for lint commands (usually `npm run lint`).
+The `dashboard/` directory contains a React application built with Vite.
 
-## 2. Code Style and Conventions
+*   **Setup**: `cd dashboard && npm install`
+*   **Development**: `cd dashboard && npm run dev` (Starts Vite dev server).
+*   **Build**: `cd dashboard && npm run build` (Outputs to `dashboard/dist/`).
+*   **Linting**: Standard ESLint usage if configured (check `dashboard/eslint.config.js` if present, otherwise rely on IDE formatting).
 
-### Environment & Modules
-*   **Runtime**: Node.js
-*   **Module System**: **CommonJS** (`require` / `module.exports`). Do not use ES Modules (`import`/`export`) in backend code (`src/`).
-*   **Configuration**: Uses the `config` module. Do not hardcode secrets or environment-dependent values; use `config/default.js` or environment variables.
+## 2. Code Style & Conventions
+
+Follow these rules strictly to maintain codebase consistency.
+
+### General (Backend)
+*   **Runtime**: Node.js (Latest LTS).
+*   **Module System**: **CommonJS** (`require` / `module.exports`).
+    *   *Do not* use ES Modules (`import` / `export`) in `src/`.
+*   **Configuration**: Use the `config` module (`require('config')`).
+    *   Never hardcode secrets or environment-dependent values.
+    *   Defaults are in `config/default.js`.
 
 ### Formatting
 *   **Indentation**: **2 spaces**.
-*   **Semicolons**: **Yes**, always use semicolons.
-*   **Quotes**: Use **single quotes** (`'`) for strings, unless interpolating (`backticks`).
-*   **Braces**: K&R style (open brace on the same line).
-*   **Trailing Commas**: Avoid trailing commas in function argument lists if supporting older Node versions, but generally acceptable in arrays/objects.
+*   **Semicolons**: **Always** use semicolons.
+*   **Quotes**: Use **single quotes** (`'`) for strings. Use backticks (`` ` ``) for template literals.
+*   **Braces**: K&R style (opening brace on the same line).
+*   **Max Line Length**: Aim for 100-120 characters, but readability takes precedence.
+*   **Trailing Commas**: Acceptable in multi-line objects/arrays.
 
-### Naming Conventions
-*   **Variables/Functions**: `camelCase` (e.g., `calculateQuantity`, `orderMapper`).
-*   **Classes**: `PascalCase` (e.g., `HyperliquidWS`, `BinanceClient`).
-*   **Constants**: `UPPER_CASE` for file-level constants (e.g., `MOCK_HL_EQUITY`, `DEFAULT_TIMEOUT`).
-*   **Files**: `kebab-case` (e.g., `order-validator.js`, `api-client.js`).
-*   **Private Methods**: Prefix with underscore `_` if intended to be private (e.g., `_connectWebSocket`), though JS doesn't enforce this.
+### Naming
+*   **Variables/Functions**: `camelCase` (e.g., `calculateQuantity`, `processOrder`).
+*   **Classes**: `PascalCase` (e.g., `OrderExecutor`, `BinanceClient`).
+*   **Files**: `kebab-case` (e.g., `order-mapper.js`, `risk-control.js`).
+*   **Constants**: `UPPER_CASE` (e.g., `DEFAULT_TIMEOUT`, `REDIS_KEY_PREFIX`).
+*   **Private Members**: Prefix with `_` to indicate internal use (e.g., `_connectWebSocket`), even if not strictly private.
 
-### Type Safety
-*   This is a JavaScript project (no TypeScript).
-*   Use JSDoc comments for complex functions to document parameters and return types.
+### Type Safety & Documentation
+*   **JSDoc**: Use JSDoc for all complex functions, especially public methods in core classes.
     ```javascript
     /**
-     * Calculate quantity based on ratio
+     * Calculate quantity based on ratio and risk limits.
      * @param {string} coin - The coin symbol (e.g., 'BTC')
      * @param {number} masterSize - The size of the master order
      * @returns {Promise<number>} - The calculated follower size
      */
+    async function calculateQuantity(coin, masterSize) { ... }
     ```
+*   **Type Checking**: This is standard JavaScript. Be defensive with inputs.
 
 ### Error Handling
-*   **Logging**: Use the custom logger (`src/utils/logger.js`) instead of `console.log`.
-    *   `logger.info('message')`
-    *   `logger.warn('message', { context })`
-    *   `logger.error('message', error)`
-*   **Try-Catch**: Use `try-catch` blocks for async operations, especially external API calls (Binance, Hyperliquid) and Redis operations.
-*   **Process Exit**: Only use `process.exit(1)` in critical startup failures (e.g., API security validation in `index.js`).
-*   **Async/Await**: Prefer `async/await` over raw Promises or callbacks for cleaner readability.
+*   **Logging**: **ALWAYS** use the custom logger (`src/utils/logger.js`).
+    *   `logger.info('Order placed', { orderId: '...' })`
+    *   `logger.error('Failed to sync', error)`
+*   **Async/Await**: Use `async/await` paired with `try/catch` blocks. Avoid raw Promise chains (`.then().catch()`) for complex logic.
+*   **Process Exit**: Only exit `process.exit(1)` on critical startup failures (e.g., invalid API keys).
 
-## 3. Architecture & Key Patterns
+## 3. Architecture Overview
 
-### Directory Structure
-*   `src/core/`: Business logic (Order execution, Position tracking, Consistency engine).
-*   `src/binance/`: Binance API integration.
-*   `src/hyperliquid/`: Hyperliquid WebSocket client.
-*   `src/utils/`: Utilities (Logger, Redis, Validators).
-*   `src/monitoring/`: Express server for status monitoring.
+The system bridges Hyperliquid (Master) and Binance Futures (Follower).
 
-### Critical Components
-*   **Redis**: Used heavily for state management (Order mappings, Position deltas).
-    *   **Keys**:
-        *   `map:h2b:<hyper_oid>`: Maps Hyperliquid Order ID to Binance Order ID.
-        *   `map:b2h:<binance_oid>`: Reverse mapping.
-        *   `orderHistory:<oid>`: Tracks processed orders to prevent duplicates.
-        *   `pos:delta:<coin>`: Tracks pending position delta (lag).
-    *   **TTL**: Most keys have expiration (e.g., 7 days) to prevent memory leaks.
-*   **Order Mapper**: Maintains the link between Hyperliquid OIDs and Binance OrderIDs.
-*   **Consistency Engine**: Ensures state integrity between the two exchanges.
-*   **One-Way Mode**: The system strictly enforces One-Way Mode on Binance Futures.
+### Core Components
+1.  **Hyperliquid WS** (`src/hyperliquid/`): Listens for `order` (Limit) and `fill` (Market) events.
+2.  **Order Executor** (`src/core/order-executor.js`): The brain. Decides whether to place, update, or skip orders.
+3.  **Position Tracker** (`src/core/position-tracker.js`): Tracks the "Delta" (difference) between Master and Follower to ensure eventual consistency.
+4.  **Consistency Engine** (`src/core/consistency-engine.js`): Handles edge cases like missed events or orphan fills.
+5.  **Redis**: Acts as the state database.
+    *   `map:h2b:...`: Maps Hyperliquid OID -> Binance OrderID.
+    *   `pos:delta:...`: Stores pending size that couldn't be executed immediately.
 
-### Deployment
-*   Docker is supported (`Dockerfile`, `docker-compose.yml`).
-*   Environment variables are loaded via `.env` (using `dotenv`).
-*   **Production**: Ensure `NODE_ENV=production` is set.
+### Key Logic: The "Delta"
+Because Binance has minimum order sizes ($5-100), we cannot always perfectly mirror small Hyperliquid adjustments.
+*   **Pending Delta**: If a move is too small, we store it in Redis (`pos:delta`).
+*   **Enforced Execution**: When the delta grows large enough (or during a larger trade), we bundle it and execute on Binance.
 
-## 4. Workflow Rules
-1.  **Mocking**: When writing tests, mock external dependencies (Redis, Binance API) to avoid side effects. See `tests/test-calculation.js` for examples of mocking.
-2.  **Safety**: Never commit API keys or secrets. Check `.gitignore` to ensure `.env` and `config/local.js` are excluded.
-3.  **Logs**: Ensure error logs include stack traces or context objects for easier debugging.
-4.  **Dependencies**: Check `package.json` before adding new dependencies. Prefer existing libraries (e.g., `axios`, `date-fns` if available).
+### Redis Data Structures
+Understanding Redis keys is crucial for debugging and state management:
+*   `map:h2b:<oid>`: String. Stores the mapped Binance Order ID for a given Hyperliquid Order ID.
+*   `pos:delta:<coin>`: String (Float). Stores the accumulated position difference that needs to be synced.
+*   `orderLock:<oid>`: String (TTL 10s). Distributed lock to prevent race conditions during order updates.
+*   `exposure:<coin>`: Hash. Tracks current exposure for risk management calculations.
+
+## 4. Agent Workflow Rules
+
+1.  **Analyze First**: Before editing, run `ls -R src` and `grep` to understand the dependency graph. Use `glob` to find relevant files.
+2.  **Mocking is Mandatory**: When asked to create tests, you **must** mock `ioredis` and `binance-api-node`.
+    *   **Do not** attempt to connect to a real Redis instance in tests.
+    *   Example:
+        ```javascript
+        const mockRedis = {
+          get: async () => null,
+          set: async () => 'OK',
+          disconnect: () => {}
+        };
+        ```
+3.  **Preserve State**: Do not modify `config/default.js` unless explicitly asked. It contains production defaults.
+4.  **One-Way Mode**: The system strictly relies on Binance "One-Way Mode". Do not introduce "Hedge Mode" logic.
+5.  **Safety**:
+    *   Never log raw API keys or secrets.
+    *   Never turn off `riskControl` checks in production code.
+6.  **Dashboard**: If editing the dashboard, remember it is a separate scope. You must `cd dashboard` (via `workdir`) for any frontend commands.
+
+## 5. Common Pitfalls to Avoid
+*   **Async/Await in Loops**: Be careful with `await` inside `forEach`. Use `for...of` or `Promise.all` instead.
+*   **Redis Keys**: Always use the defined constants or prefixes. Do not invent new key schemes without updating documentation.
+*   **Floating Point Math**: When calculating sizes, be aware of JS floating point precision. Use helper functions in `position-calculator.js` where possible.
+*   **Error Swallowing**: Do not use empty `catch` blocks. Always log the error with `logger.error`.

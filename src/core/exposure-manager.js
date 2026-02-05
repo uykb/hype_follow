@@ -12,7 +12,7 @@ class ExposureManager {
     this.equalRatio = config.get('trading.equalRatio');
     
     // Profit target percent (e.g. 0.0001 for 0.01%)
-    this.profitTarget = 0.0001;
+    this.profitTarget = 0.0015;
   }
 
   /**
