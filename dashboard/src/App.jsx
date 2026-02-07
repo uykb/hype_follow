@@ -15,6 +15,7 @@ import LogsPanel from './components/LogsPanel';
 import EquityChart from './components/EquityChart';
 import TradeHistory from './components/TradeHistory';
 import ConfigPanel from './components/ConfigPanel';
+import ManualTradePanel from './components/ManualTradePanel';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
 
@@ -102,6 +103,7 @@ function App() {
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <EquityChart data={history?.equity || []} />
                 <PositionsList positions={accounts.binance.positions} drifts={drifts} />
+                <ManualTradePanel token={token} supportedCoins={config.supportedCoins || ['BTC', 'ETH', 'SOL']} />
                 <ConfigPanel token={token} />
                 <Grid container spacing={3}>
                   <Grid item xs={12} md={6}>

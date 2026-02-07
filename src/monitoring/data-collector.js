@@ -210,6 +210,7 @@ class DataCollector extends EventEmitter {
       config: {
         mode: config.get('trading.mode'),
         followedUsers: this.followedUsers,
+        supportedCoins: config.get('riskControl.supportedCoins'),
         emergencyStop: config.get('app.emergencyStop')
       }
     };

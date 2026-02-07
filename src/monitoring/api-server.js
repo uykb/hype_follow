@@ -101,6 +101,45 @@ function startServer() {
     res.json(safeConfig);
   });
 
+  // --- Manual Trading Routes ---
+
+  app.get('/api/trade/open-orders', async (req, res) => {
+    try {
+      const orders = await binanceClient.client.futuresOpenOrders();
+      res.json(orders);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/trade/manual', async (req, res) => {
+    try {
+      const { symbol, side, type, price, quantity } = req.body;
+      const coin = symbol.replace('USDT', '');
+      
+      let result;
+      if (type === 'LIMIT') {
+        result = await binanceClient.createLimitOrder(coin, side === 'BUY' ? 'B' : 'A', price, quantity, false);
+      } else {
+        result = await binanceClient.createMarketOrder(coin, side === 'BUY' ? 'B' : 'A', quantity, false);
+      }
+      
+      res.json({ success: true, order: result });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/trade/cancel', async (req, res) => {
+    try {
+      const { symbol, orderId } = req.body;
+      await binanceClient.cancelOrder(symbol, orderId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
   app.post('/api/config/update', async (req, res) => {
     // In a real scenario, we'd write to a file or Redis.
     // For this MVP, we'll log it and acknowledge.

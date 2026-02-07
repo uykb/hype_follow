@@ -322,16 +322,10 @@ class HyperliquidWS extends EventEmitter {
                 }
               }
             } else {
-              // UNMAPPED ZOMBIE
-              const orderAge = Date.now() - bOrder.time;
-              if (orderAge > 2 * 60 * 1000) { // 2 minutes
-                 logger.error(`[${type}] Unmapped Zombie detected (Age: ${Math.round(orderAge/1000)}s). Canceling.`);
-                 try {
-                    await binanceClient.cancelOrder(bOrder.symbol, bOrder.orderId);
-                 } catch (cancelErr) {
-                    logger.warn(`[${type}] Failed to cancel unmapped zombie ${bOrder.orderId}`, cancelErr);
-                 }
-              }
+              // UNMAPPED ORDER (Manual)
+              // We NO LONGER prune unmapped orders to allow manual trading from the dashboard.
+              // These orders will stay open until manually canceled or filled.
+              logger.debug(`[${type}] Detected manual/unmapped Binance order ${bOrder.symbol} ${bOrder.orderId}. Skipping pruning.`);
             }
           } catch (err) {
             logger.error(`[${type}] Error checking/pruning order ${bOrder.orderId}`, err);
