@@ -15,10 +15,16 @@ export const useWebSocket = (token) => {
     let reconnectTimer;
 
     const connect = () => {
-      // Pass token via query parameter for more robust auth
-      const url = new URL(WS_URL);
-      url.searchParams.set('token', token);
-      ws = new WebSocket(url.toString());
+      try {
+        // Pass token via query parameter
+        const url = new URL(WS_URL);
+        url.searchParams.set('token', token);
+        console.log('Attempting WS connection to:', url.origin, 'with token');
+        ws = new WebSocket(url.toString());
+      } catch (err) {
+        console.error('Failed to create WebSocket URL', err);
+        return;
+      }
 
       ws.onopen = () => {
         setConnected(true);

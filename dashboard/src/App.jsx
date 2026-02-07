@@ -44,10 +44,13 @@ function App() {
     return (
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', bgcolor: 'background.default' }}>
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', bgcolor: 'background.default', p: 3 }}>
           <CircularProgress size={60} thickness={4} />
           <Typography variant="h6" sx={{ mt: 3, color: 'text.secondary' }}>HypeFollow 系统连接中...</Typography>
-          <Button onClick={logout} sx={{ mt: 2 }}>退出登录</Button>
+          <Typography variant="body2" sx={{ mt: 1, color: 'text.secondary', textAlign: 'center' }}>
+            如果长时间停留在此页面，请尝试强制刷新 (Ctrl+F5) 或检查后端日志。
+          </Typography>
+          <Button onClick={logout} variant="outlined" sx={{ mt: 4 }}>退出登录</Button>
         </Box>
       </ThemeProvider>
     );

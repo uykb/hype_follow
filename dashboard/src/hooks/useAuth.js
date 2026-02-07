@@ -21,6 +21,7 @@ export const useAuth = () => {
   const login = (newToken) => {
     sessionStorage.setItem('hf_token', newToken);
     setToken(newToken);
+    setIsConfigured(true);
   };
 
   const logout = () => {

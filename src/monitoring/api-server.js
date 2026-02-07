@@ -137,7 +137,9 @@ function startServer() {
   // --- WebSocket Logic ---
 
   wss.on('connection', (ws, req) => {
-    // Auth via Query Parameter (more robust for browsers)
+    logger.debug(`WS connection attempt from ${req.socket.remoteAddress} with URL: ${req.url}`);
+    
+    // Auth via Query Parameter
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const token = url.searchParams.get('token');
 
