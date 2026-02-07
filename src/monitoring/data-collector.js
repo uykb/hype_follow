@@ -3,6 +3,7 @@ const redis = require('../utils/redis');
 const logger = require('../utils/logger');
 const accountManager = require('../core/account-manager');
 const binanceClient = require('../binance/api-client');
+const exposureManager = require('../core/exposure-manager');
 const EventEmitter = require('events');
 
 class DataCollector extends EventEmitter {
@@ -25,6 +26,7 @@ class DataCollector extends EventEmitter {
         hyperliquid: {},
         binance: { equity: 0, positions: [] }
       },
+      drifts: {},
       orderMappings: [],
       history: {
         equity: [], // [{ timestamp, hlEquity, bnEquity }]
@@ -160,9 +162,15 @@ class DataCollector extends EventEmitter {
           markPrice: p.markPrice,
           unrealizedProfit: p.unrealizedProfit,
           leverage: p.leverage,
-          liquidationPrice: p.liquidationPrice // Added Liquidation Price
+          liquidationPrice: p.liquidationPrice
         }))
       };
+
+      // Drift calculation for the first followed user (main target)
+      if (this.followedUsers.length > 0) {
+        const drifts = await exposureManager.getDriftSnapshot(this.followedUsers[0]);
+        this.cache.drifts = drifts;
+      }
     } catch (e) {
       logger.warn('Failed to fetch Binance data in collector', e);
     }
@@ -196,6 +204,7 @@ class DataCollector extends EventEmitter {
         uptime: Math.floor((Date.now() - this.stats.startTime) / 1000)
       },
       accounts: this.cache.accounts,
+      drifts: this.cache.drifts,
       mappings: this.cache.orderMappings,
       history: this.cache.history, // Expose history
       config: {

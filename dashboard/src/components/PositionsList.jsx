@@ -48,7 +48,7 @@ const PositionCard = ({ position }) => {
     );
   };
   
-  const PositionsList = ({ positions }) => {
+  const PositionsList = ({ positions, drifts = {} }) => {
     const theme = useTheme();
     const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   
@@ -60,6 +60,11 @@ const PositionCard = ({ position }) => {
       );
     }
   
+    const getDriftInfo = (symbol) => {
+      const coin = symbol.replace('USDT', '');
+      return drifts[coin];
+    };
+
     if (isMobile) {
       return (
         <Box>
@@ -79,7 +84,7 @@ const PositionCard = ({ position }) => {
     return (
       <Paper sx={{ overflow: 'hidden' }}>
         <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
-          <Typography variant="h6">币安持仓</Typography>
+          <Typography variant="h6">币安持仓 & 偏差监控</Typography>
         </Box>
         <TableContainer>
           <Table size="small">
@@ -87,25 +92,34 @@ const PositionCard = ({ position }) => {
               <TableRow>
                 <TableCell>币种</TableCell>
                 <TableCell align="right">数量</TableCell>
-                <TableCell align="right">开仓价</TableCell>
+                <TableCell align="right">偏差量</TableCell>
+                <TableCell align="right">偏差率</TableCell>
                 <TableCell align="right">标记价</TableCell>
-                <TableCell align="right">爆仓价</TableCell>
                 <TableCell align="right">盈亏 (USDT)</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {positions.map((p) => {
                  const pnl = parseFloat(p.unrealizedProfit);
-                 const liqPrice = parseFloat(p.liquidationPrice);
+                 const driftInfo = getDriftInfo(p.symbol);
+                 
                  return (
                   <TableRow key={p.symbol} hover>
                       <TableCell component="th" scope="row" sx={{ fontWeight: 'bold' }}>{p.symbol}</TableCell>
                       <TableCell align="right" sx={{ fontFamily: 'monospace' }}>{parseFloat(p.amount).toFixed(3)}</TableCell>
-                      <TableCell align="right" sx={{ fontFamily: 'monospace' }}>{parseFloat(p.entryPrice).toFixed(2)}</TableCell>
-                      <TableCell align="right" sx={{ fontFamily: 'monospace' }}>{parseFloat(p.markPrice).toFixed(2)}</TableCell>
-                      <TableCell align="right" sx={{ fontFamily: 'monospace', color: 'warning.main' }}>
-                        {liqPrice > 0 ? liqPrice.toFixed(2) : '--'}
+                      <TableCell align="right" sx={{ 
+                        fontFamily: 'monospace',
+                        color: driftInfo?.shouldRebalance ? 'warning.main' : 'text.secondary'
+                      }}>
+                        {driftInfo ? (driftInfo.drift > 0 ? '+' : '') + driftInfo.drift.toFixed(3) : '--'}
                       </TableCell>
+                      <TableCell align="right" sx={{ 
+                        fontFamily: 'monospace',
+                        color: driftInfo?.shouldRebalance ? 'warning.main' : 'text.secondary'
+                      }}>
+                        {driftInfo ? (driftInfo.driftPct * 100).toFixed(1) + '%' : '--'}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontFamily: 'monospace' }}>{parseFloat(p.markPrice).toFixed(2)}</TableCell>
                       <TableCell align="right" sx={{ fontWeight: 'bold', color: pnl >= 0 ? 'success.main' : 'error.main' }}>
                       {pnl.toFixed(2)}
                       </TableCell>

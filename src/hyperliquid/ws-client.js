@@ -7,7 +7,6 @@ const axios = require('axios');
 const binanceClient = require('../binance/api-client');
 const orderMapper = require('../core/order-mapper');
 const orderExecutor = require('../core/order-executor');
-const exposureManager = require('../core/exposure-manager');
 const consistencyEngine = require('../core/consistency-engine');
 
 class HyperliquidWS extends EventEmitter {
@@ -46,8 +45,8 @@ class HyperliquidWS extends EventEmitter {
       // Perform Initial Sync of Open Orders
       this.syncOrders('Initial');
       
-      // Start Periodic Sync
-      this.startPeriodicSync();
+      // Periodic sync disabled as per user request (only reactive mode)
+      // this.startPeriodicSync();
     });
 
 
@@ -189,16 +188,6 @@ class HyperliquidWS extends EventEmitter {
           
           // Add to global set for pruning phase
           hlOpenOrders.forEach(o => allHlOpenOrderIds.add(o.oid.toString()));
-
-          // --- Phase 0: Pre-Sync Risk Check ---
-          // Run ExposureManager BEFORE syncing HL orders to ensure the "Reduce Half" safety net
-          // gets priority on the Binance position quota.
-          logger.info(`[${type}] Running pre-sync risk check for ${user}...`);
-          await Promise.all([
-            exposureManager.checkAndRebalance('BTC', user).catch(err => logger.error(`[${type}] Pre-sync rebalance failed for BTC`, err)),
-            exposureManager.checkAndRebalance('ETH', user).catch(err => {}),
-            exposureManager.checkAndRebalance('SOL', user).catch(err => {})
-          ]);
 
           // --- Phase 1: Sync HL -> Binance (Create / Verify) ---
           for (const order of hlOpenOrders) {

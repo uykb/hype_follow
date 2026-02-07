@@ -29,7 +29,7 @@ function App() {
     );
   }
 
-  const { stats, accounts, mappings, config, history } = snapshot;
+  const { stats, accounts, drifts, mappings, config, history } = snapshot;
 
   return (
     <ThemeProvider theme={theme}>
@@ -67,9 +67,10 @@ function App() {
             {/* Main Content Area */}
             <Grid item xs={12} lg={8}>
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <EquityChart data={history?.equity || []} />
-                <PositionsList positions={accounts.binance.positions} />
-                <Grid container spacing={3}>
+                 <EquityChart data={history?.equity || []} />
+                 <PositionsList positions={accounts.binance.positions} drifts={drifts} />
+                 <Grid container spacing={3}>
+
                   <Grid item xs={12} md={6}>
                     <OrderMappings mappings={mappings} />
                   </Grid>

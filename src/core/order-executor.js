@@ -7,7 +7,6 @@ const consistencyEngine = require('./consistency-engine');
 const riskControl = require('./risk-control');
 const positionCalculator = require('./position-calculator');
 const dataCollector = require('../monitoring/data-collector'); // Import DataCollector
-const exposureManager = require('./exposure-manager');
 
 class OrderExecutor {
   
@@ -146,19 +145,13 @@ class OrderExecutor {
                 binanceOrderId: binanceOrder.orderId
               });
 
-              // Update Delta
-              const deltaCleared = signedTotalSize - signedMasterOrderSize;
-              await positionTracker.consumePendingDelta(coin, deltaCleared);
+               // Update Delta
+               const deltaCleared = signedTotalSize - signedMasterOrderSize;
+               await positionTracker.consumePendingDelta(coin, deltaCleared);
 
-              // Exposure Check & Rebalance
-              if (!skipRebalance) {
-                exposureManager.checkAndRebalance(coin, userAddress).catch(err => {
-                    logger.error(`Failed to run exposure rebalance for ${coin} (Enforced)`, err);
-                });
-              }
+               return;
+             }
 
-              return;
-            }
           }
         }
 
@@ -207,13 +200,6 @@ class OrderExecutor {
         // 7. Update Delta
         const deltaCleared = signedTotalSize - signedMasterOrderSize;
         await positionTracker.consumePendingDelta(coin, deltaCleared);
-
-        // 8. Exposure Check & Rebalance
-        if (!skipRebalance) {
-          exposureManager.checkAndRebalance(coin, userAddress).catch(err => {
-              logger.error(`Failed to run exposure rebalance for ${coin}`, err);
-          });
-        }
       }
 
     } catch (error) {
@@ -302,11 +288,6 @@ class OrderExecutor {
 
             const deltaCleared = signedTotalSize - signedMasterOrderSize;
             await positionTracker.consumePendingDelta(coin, deltaCleared);
-
-            // Exposure Check & Rebalance
-            exposureManager.checkAndRebalance(coin, userAddress).catch(err => {
-                logger.error(`Failed to run exposure rebalance for ${coin} (Market)`, err);
-            });
             return;
           }
         }
@@ -349,11 +330,6 @@ class OrderExecutor {
 
       const deltaCleared = signedTotalSize - signedMasterOrderSize;
       await positionTracker.consumePendingDelta(coin, deltaCleared);
-
-      // Exposure Check & Rebalance (New Risk Control)
-      exposureManager.checkAndRebalance(coin, userAddress).catch(err => {
-          logger.error(`Failed to run exposure rebalance for ${coin}`, err);
-      });
 
     } catch (error) {
       logger.error(`Failed to execute market order for ${coin}`, error);

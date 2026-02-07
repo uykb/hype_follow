@@ -3,7 +3,6 @@ const orderMapper = require('./order-mapper');
 const redis = require('../utils/redis');
 const logger = require('../utils/logger');
 const config = require('config');
-const exposureManager = require('./exposure-manager');
 
 class OrderValidator {
   constructor() {
@@ -105,11 +104,6 @@ class OrderValidator {
           totalChecked += keys.length;
         }
       } while (cursor !== '0');
-
-      // 2. Perform Full Account Reconciliation (Dual-Track: Slow Path)
-      if (this.masterAddress) {
-        await exposureManager.reconcileAll(this.masterAddress);
-      }
 
     } catch (error) {
       logger.error('Error in order validation loop', error);
