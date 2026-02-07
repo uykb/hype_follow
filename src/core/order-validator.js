@@ -2,12 +2,18 @@ const binanceClient = require('../binance/api-client');
 const orderMapper = require('./order-mapper');
 const redis = require('../utils/redis');
 const logger = require('../utils/logger');
+const config = require('config');
+const exposureManager = require('./exposure-manager');
 
 class OrderValidator {
   constructor() {
     this.checkInterval = 60000; // 1 minute
     this.timer = null;
     this.isChecking = false;
+    
+    // MVP: Assume first followed user for reconciliation
+    const followedUsers = config.get('hyperliquid.followedUsers');
+    this.masterAddress = followedUsers && followedUsers.length > 0 ? followedUsers[0] : null;
   }
 
   start() {
@@ -36,8 +42,19 @@ class OrderValidator {
         const keys = result[1];
         
         for (const key of keys) {
-          const hyperOid = key.replace('map:h2b:', '');
-          const mapping = await orderMapper.getBinanceOrder(hyperOid);
+          const fullKey = key.replace('map:h2b:', '');
+          const [userAddress, hyperOid] = fullKey.split(':');
+          
+          if (!userAddress || !hyperOid) {
+             // Legacy key or corrupted?
+             const mapping = await orderMapper.getBinanceOrder(null, fullKey); // Try legacy
+             if (!mapping) {
+                await redis.del(key);
+                continue;
+             }
+          }
+
+          const mapping = await orderMapper.getBinanceOrder(userAddress, hyperOid);
           if (!mapping) continue;
 
           try {
@@ -48,7 +65,7 @@ class OrderValidator {
           } catch (error) {
             // -2011: Unknown order
             if (error.code === -2011) {
-              await orderMapper.deleteMapping(hyperOid);
+              await orderMapper.deleteMapping(userAddress, hyperOid);
               cleaned++;
             }
           }
@@ -68,28 +85,30 @@ class OrderValidator {
     this.isChecking = true;
 
     try {
+      // 1. Validate Order Statuses (Current logic)
       let cursor = '0';
       let totalChecked = 0;
 
       do {
-        // Use SCAN instead of KEYS to avoid blocking Redis
         const result = await redis.scan(cursor, 'MATCH', 'map:h2b:*', 'COUNT', 100);
         cursor = result[0];
         const keys = result[1];
 
         if (keys.length > 0) {
-          logger.debug(`Validating batch of ${keys.length} active order mappings...`);
-          
           for (const key of keys) {
-            const hyperOid = key.replace('map:h2b:', '');
-            await this.validateOrder(hyperOid);
+            const fullKey = key.replace('map:h2b:', '');
+            const [userAddress, hyperOid] = fullKey.split(':');
+            if (userAddress && hyperOid) {
+              await this.validateOrder(userAddress, hyperOid);
+            }
           }
           totalChecked += keys.length;
         }
       } while (cursor !== '0');
 
-      if (totalChecked === 0) {
-         // idle loop
+      // 2. Perform Full Account Reconciliation (Dual-Track: Slow Path)
+      if (this.masterAddress) {
+        await exposureManager.reconcileAll(this.masterAddress);
       }
 
     } catch (error) {
@@ -99,9 +118,11 @@ class OrderValidator {
     }
   }
 
-  async validateOrder(hyperOid) {
-    const mapping = await orderMapper.getBinanceOrder(hyperOid);
+  async validateOrder(userAddress, hyperOid) {
+    const mapping = await orderMapper.getBinanceOrder(userAddress, hyperOid);
     if (!mapping) return;
+
+    const fullKey = `${userAddress}:${hyperOid}`;
 
     try {
       // Query Binance for real-time status
@@ -114,31 +135,31 @@ class OrderValidator {
       
       if (finalStatuses.includes(binanceOrder.status)) {
         logger.info(`Cleaning up finished order: ${mapping.symbol} ${mapping.orderId} (Status: ${binanceOrder.status})`);
-        await orderMapper.deleteMapping(hyperOid);
+        await orderMapper.deleteMapping(userAddress, hyperOid);
       } else {
-        await redis.del(`validate:fail:${hyperOid}`);
+        await redis.del(`validate:fail:${fullKey}`);
       }
       
       // Additional check: Timeout for stuck open orders (e.g., 24h)
-      const timestamp = await orderMapper.getOrderTimestamp(hyperOid);
+      const timestamp = await orderMapper.getOrderTimestamp(userAddress, hyperOid);
       const oneDay = 24 * 60 * 60 * 1000;
       if (timestamp && (Date.now() - timestamp > oneDay)) {
         logger.warn(`Stuck order detected (over 24h): ${mapping.symbol} ${mapping.orderId}. Cleaning up mapping.`);
-        await orderMapper.deleteMapping(hyperOid);
+        await orderMapper.deleteMapping(userAddress, hyperOid);
       }
 
     } catch (error) {
-      const failKey = `validate:fail:${hyperOid}`;
+      const failKey = `validate:fail:${fullKey}`;
       const fails = await redis.incr(failKey);
       await redis.expire(failKey, 3600);
 
       if (error.code === -2011) { // Unknown order
-        logger.warn(`Binance order ${mapping.orderId} not found for HL OID ${hyperOid}. Cleaning up mapping.`);
-        await orderMapper.deleteMapping(hyperOid);
+        logger.warn(`Binance order ${mapping.orderId} not found for HL OID ${hyperOid} (${userAddress}). Cleaning up mapping.`);
+        await orderMapper.deleteMapping(userAddress, hyperOid);
         await redis.del(failKey);
       } else {
         // Only log network/other errors, do not force delete mapping to avoid losing valid orders
-        logger.error(`Failed to validate order ${hyperOid} (Attempt ${fails})`, {
+        logger.error(`Failed to validate order ${fullKey} (Attempt ${fails})`, {
           message: error.message,
           code: error.code,
           fullError: error
@@ -159,10 +180,13 @@ class OrderValidator {
         const keys = result[1];
         
         for (const key of keys) {
-          const hyperOid = key.replace('map:h2b:', '');
-          const mapping = await orderMapper.getBinanceOrder(hyperOid);
-          if (mapping) {
-            details.push({ hyperOid, ...mapping });
+          const fullKey = key.replace('map:h2b:', '');
+          const [userAddress, hyperOid] = fullKey.split(':');
+          if (userAddress && hyperOid) {
+            const mapping = await orderMapper.getBinanceOrder(userAddress, hyperOid);
+            if (mapping) {
+              details.push({ hyperOid, userAddress, ...mapping });
+            }
           }
         }
         totalActive += keys.length;

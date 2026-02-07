@@ -14,6 +14,80 @@ const positionTracker = require('./core/position-tracker');
 const consistencyEngine = require('./core/consistency-engine');
 const orderExecutor = require('./core/order-executor');
 
+// Event Serialization (Prevent Race Conditions)
+const orderQueues = new Map();
+
+async function processOrderEvent(orderData) {
+  const key = `${orderData.userAddress}:${orderData.oid}`;
+  
+  if (!orderQueues.has(key)) {
+    orderQueues.set(key, Promise.resolve());
+  }
+
+  const task = async () => {
+    try {
+      if (orderData.status === 'open' || orderData.status === 'triggered') {
+        // Check if this is an Update (Mapping exists)
+        const existingMapping = await orderMapper.getBinanceOrder(orderData.userAddress, orderData.oid);
+        
+        if (existingMapping) {
+           await orderExecutor.updateLimitOrder(orderData);
+        } else {
+           // Handle New Limit Order
+           await orderExecutor.executeLimitOrder(orderData);
+        }
+      
+      } else if (orderData.status === 'canceled') {
+        // Handle Cancel
+        const mappedOrder = await orderMapper.getBinanceOrder(orderData.userAddress, orderData.oid);
+        if (mappedOrder) {
+          await binanceClient.cancelOrder(mappedOrder.symbol, mappedOrder.orderId);
+          await orderMapper.deleteMapping(orderData.userAddress, orderData.oid);
+        } else {
+           // If cancel event arrives but no mapping yet, we might have a race where Add is still processing.
+           // However, since we serialize by key, the Add event should have finished or be ahead of us in the queue.
+           // If we are here and mapping is STILL null, it means we don't know about this order (maybe placed before bot started).
+           logger.debug(`Cancel event for unmapped order ${key}, ignoring.`);
+        }
+
+      } else if (orderData.status === 'filled') {
+        // Handle Fill (Cleanup)
+        await consistencyEngine.handleHyperliquidFill(orderData.userAddress, orderData.oid);
+        
+        const mapping = await orderMapper.getBinanceOrder(orderData.userAddress, orderData.oid);
+        if (mapping) {
+          try {
+             const bOrder = await binanceClient.client.futuresOrder({
+               symbol: mapping.symbol,
+               orderId: mapping.orderId
+             });
+             
+             if (['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(bOrder.status)) {
+               await orderMapper.deleteMapping(orderData.userAddress, orderData.oid);
+             }
+          } catch (err) {
+            logger.warn(`Failed to check Binance status for cleanup ${orderData.oid}`, err);
+          }
+        }
+      }
+    } catch (err) {
+      logger.error(`Error processing order task for ${key}`, err);
+    }
+  };
+
+  const nextPromise = orderQueues.get(key).then(task);
+  orderQueues.set(key, nextPromise);
+
+  // Cleanup queue after idle
+  nextPromise.then(() => {
+    if (orderQueues.get(key) === nextPromise) {
+      orderQueues.delete(key);
+    }
+  });
+
+  return nextPromise;
+}
+
 // Global Error Handlers (Critical for stability)
 process.on('uncaughtException', (error) => {
   logger.error('FATAL: Uncaught Exception', error);
@@ -67,65 +141,7 @@ async function main() {
   // 5. Handle Hyperliquid Order Events (Limit Orders)
   hyperWs.on('order', async (orderData) => {
     dataCollector.stats.totalOrders++;
-    
-    try {
-      if (orderData.status === 'open' || orderData.status === 'triggered') {
-        // Check if this is an Update (Mapping exists)
-        const existingMapping = await orderMapper.getBinanceOrder(orderData.oid);
-        
-        if (existingMapping) {
-           await orderExecutor.updateLimitOrder(orderData);
-        } else {
-           // Handle New Limit Order
-           await orderExecutor.executeLimitOrder(orderData);
-        }
-      
-      } else if (orderData.status === 'canceled') {
-        // Handle Cancel
-        const mappedOrder = await orderMapper.getBinanceOrder(orderData.oid);
-        if (mappedOrder) {
-          await binanceClient.cancelOrder(mappedOrder.symbol, mappedOrder.orderId);
-          await orderMapper.deleteMapping(orderData.oid);
-        }
-
-      } else if (orderData.status === 'filled') {
-        // Handle Fill (Cleanup)
-        // Check if this resolves any orphan state (e.g. Binance filled first)
-        await consistencyEngine.handleHyperliquidFill(orderData.oid);
-        
-        // Only delete mapping if Binance order is also finished.
-        // Otherwise keep mapping to prevent duplicates (consistencyEngine checks mapping)
-        const mapping = await orderMapper.getBinanceOrder(orderData.oid);
-        if (mapping) {
-          try {
-             // We check Binance status briefly
-             // Note: This adds latency to event loop, but necessary for safety
-             // Optimization: We could just rely on OrderValidator to clean up later?
-             // But if we want to place next order fast, we might want to clean up.
-             // Actually, if Binance is NOT filled, we WANT to block next order (prevent duplicate).
-             // So leaving mapping is Correct.
-             
-             // If Binance IS filled, we want to delete.
-             // OrderValidator runs every 60s. Might be too slow.
-             // So checking here is good.
-             const bOrder = await binanceClient.client.futuresOrder({
-               symbol: mapping.symbol,
-               orderId: mapping.orderId
-             });
-             
-             if (['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(bOrder.status)) {
-               await orderMapper.deleteMapping(orderData.oid);
-             }
-          } catch (err) {
-            // If check fails, leave mapping to be safe
-            logger.warn(`Failed to check Binance status for cleanup ${orderData.oid}`, err);
-          }
-        }
-      }
-
-    } catch (error) {
-      logger.error('Failed to process order event', error);
-    }
+    processOrderEvent(orderData); // Run serialized
   });
 
   // 6. Handle Hyperliquid Fill Events (Market Trades)
@@ -162,21 +178,23 @@ async function main() {
         if (status === 'FILLED' || status === 'PARTIALLY_FILLED') {
            // We have a fill on Binance.
            // Check if it corresponds to a mapped Hype order.
-           const binanceOrderId = order.orderId || order.i;
-           const hyperOid = await orderMapper.getHyperliquidOrder(binanceOrderId);
-           
-           if (hyperOid) {
-             // It is a mapped order.
-             // Record it as Orphan (initially) - assuming Hype hasn't filled yet.
-             
-             await consistencyEngine.recordOrphanFill(hyperOid, {
-               coin: order.symbol.replace('USDT', ''), // Remove USDT suffix
-               side: (order.side || order.S) === 'BUY' ? 'B' : 'A',
-               sz: order.lastTradeQuantity || order.l,
-               price: order.lastTradePrice || order.L,
-               binanceOrderId: binanceOrderId
-             });
-           }
+            const binanceOrderId = order.orderId || order.i;
+            const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
+            
+            if (mapping) {
+              // It is a mapped order.
+              // Record it as Orphan (initially) - assuming Hype hasn't filled yet.
+              
+              await consistencyEngine.recordOrphanFill(mapping.oid, {
+                coin: order.symbol.replace('USDT', ''), // Remove USDT suffix
+                side: (order.side || order.S) === 'BUY' ? 'B' : 'A',
+                sz: order.lastTradeQuantity || order.l,
+                price: order.lastTradePrice || order.L,
+                binanceOrderId: binanceOrderId,
+                userAddress: mapping.user
+              });
+            }
+
         }
       }
     });
@@ -195,8 +213,15 @@ async function main() {
   });
 }
 
-main().catch(error => {
-  logger.error('Fatal error during startup', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(error => {
+    logger.error('Fatal error during startup', error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  processOrderEvent,
+  orderQueues
+};
 

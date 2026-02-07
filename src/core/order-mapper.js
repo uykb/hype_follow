@@ -10,23 +10,25 @@ const EXPIRY = 60 * 60 * 24 * 7; // 7 days retention
 class OrderMapper {
   /**
    * Map a Hyperliquid OID to a Binance OrderId
+   * @param {string} userAddress
    * @param {string} hyperOid 
    * @param {string} binanceOrderId 
    * @param {string} symbol 
    */
-  async saveMapping(hyperOid, binanceOrderId, symbol) {
+  async saveMapping(userAddress, hyperOid, binanceOrderId, symbol) {
     try {
       const pipeline = redis.pipeline();
+      const hKey = `${userAddress}:${hyperOid}`;
       
       // Store bi-directional mapping
-      pipeline.set(`${HYPER_TO_BINANCE}${hyperOid}`, JSON.stringify({ orderId: binanceOrderId, symbol }), 'EX', EXPIRY);
-      pipeline.set(`${BINANCE_TO_HYPER}${binanceOrderId}`, JSON.stringify({ oid: hyperOid, symbol }), 'EX', EXPIRY);
+      pipeline.set(`${HYPER_TO_BINANCE}${hKey}`, JSON.stringify({ orderId: binanceOrderId, symbol, user: userAddress }), 'EX', EXPIRY);
+      pipeline.set(`${BINANCE_TO_HYPER}${binanceOrderId}`, JSON.stringify({ oid: hyperOid, symbol, user: userAddress }), 'EX', EXPIRY);
       
       // Store timestamp for timeout/validation tracking
-      pipeline.set(`${ORDER_TIMESTAMP}${hyperOid}`, Date.now().toString(), 'EX', EXPIRY);
+      pipeline.set(`${ORDER_TIMESTAMP}${hKey}`, Date.now().toString(), 'EX', EXPIRY);
       
       await pipeline.exec();
-      logger.debug(`Mapped Hyperliquid OID ${hyperOid} to Binance OrderID ${binanceOrderId} with timestamp`);
+      logger.debug(`Mapped Hyperliquid OID ${hKey} to Binance OrderID ${binanceOrderId} with timestamp`);
     } catch (error) {
       logger.error('Failed to save order mapping', error);
     }
@@ -34,12 +36,14 @@ class OrderMapper {
 
   /**
    * Get Binance OrderId from Hyperliquid OID
+   * @param {string} userAddress
    * @param {string} hyperOid 
-   * @returns {Promise<{orderId: string, symbol: string}|null>}
+   * @returns {Promise<{orderId: string, symbol: string, user: string}|null>}
    */
-  async getBinanceOrder(hyperOid) {
+  async getBinanceOrder(userAddress, hyperOid) {
     try {
-      const data = await redis.get(`${HYPER_TO_BINANCE}${hyperOid}`);
+      const hKey = `${userAddress}:${hyperOid}`;
+      const data = await redis.get(`${HYPER_TO_BINANCE}${hKey}`);
       return data ? JSON.parse(data) : null;
     } catch (error) {
       logger.error('Failed to get Binance order', error);
@@ -48,16 +52,15 @@ class OrderMapper {
   }
 
   /**
-   * Get Hyperliquid OID from Binance OrderId
+   * Get Hyperliquid OID and User from Binance OrderId
    * @param {string} binanceOrderId 
-   * @returns {Promise<string|null>} Hyperliquid OID
+   * @returns {Promise<{oid: string, user: string, symbol: string}|null>} Hyperliquid info
    */
   async getHyperliquidOrder(binanceOrderId) {
     try {
       const data = await redis.get(`${BINANCE_TO_HYPER}${binanceOrderId}`);
       if (!data) return null;
-      const parsed = JSON.parse(data);
-      return parsed.oid;
+      return JSON.parse(data);
     } catch (error) {
       logger.error('Failed to get Hyperliquid order', error);
       return null;
@@ -66,11 +69,13 @@ class OrderMapper {
 
   /**
    * Get Order timestamp
+   * @param {string} userAddress
    * @param {string} hyperOid 
    */
-  async getOrderTimestamp(hyperOid) {
+  async getOrderTimestamp(userAddress, hyperOid) {
     try {
-      const ts = await redis.get(`${ORDER_TIMESTAMP}${hyperOid}`);
+      const hKey = `${userAddress}:${hyperOid}`;
+      const ts = await redis.get(`${ORDER_TIMESTAMP}${hKey}`);
       return ts ? parseInt(ts) : null;
     } catch (error) {
       return null;
@@ -79,22 +84,24 @@ class OrderMapper {
 
   /**
    * Delete mapping for a Hyperliquid OID
+   * @param {string} userAddress
    * @param {string} hyperOid 
    */
-  async deleteMapping(hyperOid) {
+  async deleteMapping(userAddress, hyperOid) {
     try {
-      const mappedOrder = await this.getBinanceOrder(hyperOid);
+      const mappedOrder = await this.getBinanceOrder(userAddress, hyperOid);
+      const hKey = `${userAddress}:${hyperOid}`;
       
       const pipeline = redis.pipeline();
-      pipeline.del(`${HYPER_TO_BINANCE}${hyperOid}`);
-      pipeline.del(`${ORDER_TIMESTAMP}${hyperOid}`);
+      pipeline.del(`${HYPER_TO_BINANCE}${hKey}`);
+      pipeline.del(`${ORDER_TIMESTAMP}${hKey}`);
       
       if (mappedOrder && mappedOrder.orderId) {
         pipeline.del(`${BINANCE_TO_HYPER}${mappedOrder.orderId}`);
       }
       
       await pipeline.exec();
-      logger.debug(`Deleted mapping for Hyperliquid OID ${hyperOid}`);
+      logger.debug(`Deleted mapping for Hyperliquid OID ${hKey}`);
     } catch (error) {
       logger.error('Failed to delete order mapping', error);
     }

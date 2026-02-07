@@ -50,7 +50,7 @@ class OrderExecutor {
     
     try {
       // 1. Consistency Check
-      if (!await consistencyEngine.shouldProcessHyperOrder(oid)) {
+      if (!await consistencyEngine.shouldProcessHyperOrder(userAddress, oid)) {
         return;
       }
 
@@ -124,7 +124,7 @@ class OrderExecutor {
             
             if (binanceOrder && binanceOrder.orderId) {
                const symbol = binanceClient.getBinanceSymbol(coin);
-               await orderMapper.saveMapping(oid, binanceOrder.orderId, symbol);
+               await orderMapper.saveMapping(userAddress, oid, binanceOrder.orderId, symbol);
                
                // Record Trade Stats
                dataCollector.recordTrade({
@@ -182,7 +182,7 @@ class OrderExecutor {
       // 6. Post-Process
       if (binanceOrder && binanceOrder.orderId) {
         const symbol = binanceClient.getBinanceSymbol(coin);
-        await orderMapper.saveMapping(oid, binanceOrder.orderId, symbol);
+        await orderMapper.saveMapping(userAddress, oid, binanceOrder.orderId, symbol);
       
         // Record Trade Stats
         dataCollector.recordTrade({
@@ -220,7 +220,7 @@ class OrderExecutor {
       logger.error(`Failed to execute limit order ${oid}`, error);
     } finally {
       // Always release the lock
-      await consistencyEngine.releaseOrderLock(oid);
+      await consistencyEngine.releaseOrderLock(userAddress, oid);
     }
   }
 
@@ -276,7 +276,7 @@ class OrderExecutor {
             
             if (binanceOrder && binanceOrder.orderId) {
               const symbol = binanceClient.getBinanceSymbol(coin);
-              await orderMapper.saveMapping(fillId, binanceOrder.orderId, symbol);
+              await orderMapper.saveMapping(userAddress, fillId, binanceOrder.orderId, symbol);
             }
             
             // Record Trade Stats (Market)
@@ -324,7 +324,7 @@ class OrderExecutor {
 
       if (binanceOrder && binanceOrder.orderId) {
         const symbol = binanceClient.getBinanceSymbol(coin);
-        await orderMapper.saveMapping(fillId, binanceOrder.orderId, symbol);
+        await orderMapper.saveMapping(userAddress, fillId, binanceOrder.orderId, symbol);
       }
 
       // Record Trade Stats
@@ -378,7 +378,7 @@ class OrderExecutor {
     }
 
     try {
-      const mapping = await orderMapper.getBinanceOrder(oid);
+      const mapping = await orderMapper.getBinanceOrder(userAddress, oid);
       if (!mapping) {
         logger.warn(`[OrderExecutor] Cannot update order ${oid}: No mapping found.`);
         return;
@@ -416,9 +416,9 @@ class OrderExecutor {
         // 3. Update Mapping (Only if successful)
         if (newBinanceOrder && newBinanceOrder.orderId) {
           // Cleanup old mapping
-          await orderMapper.deleteMapping(oid);
+          await orderMapper.deleteMapping(userAddress, oid);
           // Save new mapping
-          await orderMapper.saveMapping(oid, newBinanceOrder.orderId, mapping.symbol);
+          await orderMapper.saveMapping(userAddress, oid, newBinanceOrder.orderId, mapping.symbol);
           
           logger.info(`[OrderExecutor] Order updated (Atomic): HL ${oid} -> Binance ${newBinanceOrder.orderId}`);
           

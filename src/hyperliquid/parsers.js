@@ -25,15 +25,22 @@ function parseOrderUpdate(data) {
     const order = orderEvent.order;
     const status = order.status ? order.status.toLowerCase() : '';
 
-    // We are interested in 'open', 'canceled', 'filled', and 'triggered'
-    if (status !== 'open' && status !== 'canceled' && status !== 'filled' && status !== 'triggered') {
+    // We are interested in 'open', 'canceled', 'filled', 'triggered', 'rejected', 'marginCanceled'
+    const monitoredStatuses = ['open', 'canceled', 'filled', 'triggered', 'rejected', 'margincanceled'];
+    if (!monitoredStatuses.includes(status)) {
       logger.debug(`parseOrderUpdate: ignoring status '${status}'`, { oid: order.oid });
       continue;
     }
 
+    // Treat 'rejected' and 'marginCanceled' as 'canceled' for synchronization purposes
+    let standardizedStatus = status;
+    if (status === 'rejected' || status === 'margincanceled') {
+      standardizedStatus = 'canceled';
+    }
+
     orders.push({
       type: 'order',
-      status: status, // 'open', 'canceled', 'filled', or 'triggered'
+      status: standardizedStatus,
       coin: order.coin,
       side: order.side, // 'B' or 'A'
       limitPx: order.limitPx,

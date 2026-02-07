@@ -216,14 +216,14 @@ class HyperliquidWS extends EventEmitter {
             };
 
             // A. Check Existing Mapping
-            const existingMapping = await orderMapper.getBinanceOrder(order.oid);
+            const existingMapping = await orderMapper.getBinanceOrder(user, order.oid);
             
             if (existingMapping) {
               // We have a mapping. Check if the Binance Order is ACTUALLY active.
               if (binanceOrderIdMap.has(existingMapping.orderId.toString())) {
                 // Perfect Sync: Mapped AND Active on Binance.
                 // DO NOT EMIT. This prevents duplicates definitively.
-                logger.debug(`[${type}] Order ${order.oid} already synced and active on Binance (${existingMapping.orderId}). Skipping.`);
+                logger.debug(`[${type}] Order ${user}:${order.oid} already synced and active on Binance (${existingMapping.orderId}). Skipping.`);
                 continue;
               } else {
                 // Mapping exists, but Binance Order is MISSING from OpenOrders.
@@ -231,9 +231,9 @@ class HyperliquidWS extends EventEmitter {
                 // We should probably allow re-creation (Emit), or treat as Orphan drift.
                 // Given the user wants "Copy", if HL has it open, we should probably have it open.
                 // So we fall through to Emit.
-                logger.info(`[${type}] Order ${order.oid} mapped but not found in Binance OpenOrders. Retrying sync (creating new)...`);
+                logger.info(`[${type}] Order ${user}:${order.oid} mapped but not found in Binance OpenOrders. Retrying sync (creating new)...`);
                 // Clean old mapping to allow new creation logic to run cleanly if needed
-                await orderMapper.deleteMapping(order.oid); 
+                await orderMapper.deleteMapping(user, order.oid); 
               }
             }
 
@@ -247,10 +247,6 @@ class HyperliquidWS extends EventEmitter {
 
               const matchIndex = candidates.findIndex(bo => {
                 const priceDiff = Math.abs(parseFloat(bo.price) - parseFloat(hlPriceFormatted));
-                // Allow small tolerance for floating point or rounding differences
-                // e.g. 0.0001 or 0.1% of price? 
-                // Using 0.0001 absolute tolerance for now, assuming similar precision.
-                // Or better: check if priceDiff / price < 0.0001 (0.01%)
                 const isPriceMatch = priceDiff < 0.0001 || (parseFloat(bo.price) > 0 && priceDiff / parseFloat(bo.price) < 0.0001);
                 
                 return bo.side === binanceSide && isPriceMatch;
@@ -260,9 +256,9 @@ class HyperliquidWS extends EventEmitter {
                 const matchedOrder = candidates[matchIndex];
                 candidates.splice(matchIndex, 1); // Consume candidate
 
-                logger.info(`[${type}] Recovered mapping: HL ${order.oid} <-> Binance ${matchedOrder.orderId}`);
+                logger.info(`[${type}] Recovered mapping: HL ${user}:${order.oid} <-> Binance ${matchedOrder.orderId}`);
 
-                await orderMapper.saveMapping(order.oid, matchedOrder.orderId, symbol);
+                await orderMapper.saveMapping(user, order.oid, matchedOrder.orderId, symbol);
                 await consistencyEngine.markOrderProcessed(order.oid, {
                   type: 'limit-recovered',
                   coin: order.coin,
@@ -271,10 +267,7 @@ class HyperliquidWS extends EventEmitter {
                   recoveredAt: Date.now()
                 });
 
-                // Remove from map to prevent Pruning later (though Pruning checks Redis, so it's fine)
                 continue; // Skip Emit
-              } else {
-                 logger.debug(`[${type}] No match found for HL ${order.oid} (${order.coin} ${order.side} ${hlPriceFormatted}). Candidates: ${candidates.length}`);
               }
             }
             
@@ -294,74 +287,61 @@ class HyperliquidWS extends EventEmitter {
     } // End User Loop
 
     // --- Phase 2: Prune Binance -> HL (Cancel Zombie Orders) ---
-    // Iterate all Binance Open Orders. If they map to an HL Order that is NOT in allHlOpenOrderIds, Check Status & Cancel if truly dead.
-    
     if (binanceOpenOrders.length > 0) {
       const pruneBatchSize = 5;
       for (let i = 0; i < binanceOpenOrders.length; i += pruneBatchSize) {
         const batch = binanceOpenOrders.slice(i, i + pruneBatchSize);
         await Promise.all(batch.map(async (bOrder) => {
           try {
-            // Safety: Skip Reduce-Only orders (often manual TP/SL or safety orders)
-            // These should never be pruned automatically as they might be user-managed.
-            if (bOrder.reduceOnly) {
-              return;
-            }
+            // Safety: Skip Reduce-Only orders
+            if (bOrder.reduceOnly) return;
 
             // Check if this Binance Order is a "Follow" order (has mapping)
-            const mappedHlOid = await orderMapper.getHyperliquidOrder(bOrder.orderId);
+            const mapping = await orderMapper.getHyperliquidOrder(bOrder.orderId);
             
-            if (mappedHlOid) {
-              // It is a Follow order.
-              // Check if the Master Order still exists in OPEN orders
+            if (mapping) {
+              const mappedHlOid = mapping.oid;
+              const userAddress = mapping.user;
+              
               if (!allHlOpenOrderIds.has(mappedHlOid.toString())) {
-                
-                // CRITICAL: Double-check if it was FILLED/TRIGGERED recently (not just canceled)
-                // If filled, we should NOT cancel the Binance order, but let it fill or handle otherwise.
                 let isFilled = false;
-                let isConfirmedCanceled = false;
-
-                // We don't know which user owns this order easily, so we check all followed users
-                for (const user of this.followedUsers) {
+                const usersToCheck = userAddress ? [userAddress] : this.followedUsers;
+                
+                for (const user of usersToCheck) {
                   const statusInfo = await apiClient.getOrderStatus(user, mappedHlOid);
                   if (statusInfo && statusInfo.status === 'order') {
-                    // statusInfo.order.status can be: 'open', 'filled', 'canceled', 'triggered', 'rejected', 'marginCanceled'
                     const actualStatus = statusInfo.order.status;
-                    
                     if (actualStatus === 'filled' || actualStatus === 'triggered') {
                       isFilled = true;
-                      logger.warn(`[${type}] Mismatch: HL Order ${mappedHlOid} is ${actualStatus} but Binance is OPEN. Keeping Binance order to allow catch-up.`);
+                      logger.warn(`[${type}] Mismatch: HL Order ${user}:${mappedHlOid} is ${actualStatus} but Binance is OPEN. Keeping.`);
                       break; 
-                    } else if (actualStatus === 'canceled' || actualStatus === 'rejected' || actualStatus === 'marginCanceled') {
-                      isConfirmedCanceled = true;
-                      break;
                     } else if (actualStatus === 'open') {
-                       // Should have been in allHlOpenOrderIds... odd, but treat as alive
-                       logger.warn(`[${type}] HL Order ${mappedHlOid} is OPEN but missed in snapshot? Keeping.`);
-                       isFilled = true; // Treat as "alive"
+                       isFilled = true; 
                        break;
                     }
-                  } else if (statusInfo && statusInfo.status === 'unknownOid') {
-                    // It really doesn't exist. Likely canceled a long time ago.
-                    // Continue checking other users or assume canceled?
-                    // If we check all users and all say unknown, it's canceled.
                   }
                 }
 
-                if (isFilled) {
-                   return; // Do NOT cancel
-                }
+                if (isFilled) return;
 
-                // If we are here, it's either explicitly canceled OR unknown (zombie)
-                logger.info(`[${type}] Pruning Zombie Binance Order ${bOrder.orderId} (HL ${mappedHlOid} status verified as closed/unknown).`);
-                
+                logger.info(`[${type}] Pruning Zombie Binance Order ${bOrder.orderId} (HL ${userAddress}:${mappedHlOid} verified closed).`);
                 try {
                    await binanceClient.cancelOrder(bOrder.symbol, bOrder.orderId);
-                   // Clean up mapping
-                   await orderMapper.deleteMapping(mappedHlOid);
+                   await orderMapper.deleteMapping(userAddress, mappedHlOid);
                 } catch (cancelErr) {
                    logger.warn(`[${type}] Failed to cancel zombie order ${bOrder.orderId}`, cancelErr);
                 }
+              }
+            } else {
+              // UNMAPPED ZOMBIE
+              const orderAge = Date.now() - bOrder.time;
+              if (orderAge > 2 * 60 * 1000) { // 2 minutes
+                 logger.error(`[${type}] Unmapped Zombie detected (Age: ${Math.round(orderAge/1000)}s). Canceling.`);
+                 try {
+                    await binanceClient.cancelOrder(bOrder.symbol, bOrder.orderId);
+                 } catch (cancelErr) {
+                    logger.warn(`[${type}] Failed to cancel unmapped zombie ${bOrder.orderId}`, cancelErr);
+                 }
               }
             }
           } catch (err) {
@@ -393,21 +373,17 @@ class HyperliquidWS extends EventEmitter {
     const { channel, data } = message;
 
     if (channel === 'orderUpdates') {
-      logger.debug('WS: Received orderUpdates', { data }); // Detailed log
+      logger.debug('WS: Received orderUpdates', { data });
       const orders = parsers.parseOrderUpdate(data);
       
       if (orders && orders.length > 0) {
         orders.forEach(order => {
-          // Fallback for userAddress if missing (MVP assumption: single user)
           if (!order.userAddress && this.followedUsers.length > 0) {
             order.userAddress = this.followedUsers[0];
           }
-          
           logger.info(`WS: Parsed order event: ${order.status} ${order.coin} ${order.oid}`);
           this.emit('order', order);
         });
-      } else {
-        logger.debug('WS: parseOrderUpdate returned no valid orders');
       }
     } else if (channel === 'userFills') {
       const fills = parsers.parseUserFills(data);

@@ -98,17 +98,17 @@ The system bridges Hyperliquid (Master) and Binance Futures (Follower).
     *   `map:h2b:...`: Maps Hyperliquid OID -> Binance OrderID.
     *   `pos:delta:...`: Stores pending size that couldn't be executed immediately.
 
-### Key Logic: The "Delta"
-Because Binance has minimum order sizes ($5-100), we cannot always perfectly mirror small Hyperliquid adjustments.
-*   **Pending Delta**: If a move is too small, we store it in Redis (`pos:delta`).
-*   **Enforced Execution**: When the delta grows large enough (or during a larger trade), we bundle it and execute on Binance.
+### Key Logic: Dual-Track Reconciliation
+The system maintains consistency using two parallel tracks:
+1.  **Fast Path (Incremental)**: Triggered by WS `order`/`fill` events. Pursues low latency by applying incremental changes to the position.
+2.  **Slow Path (Full Reconciliation)**: Triggered by `OrderValidator` every 60s. Fetches full position snapshots from HL and Binance, calculates the "Drift" (`Target - Actual`), and executes realignment orders if drift > 1%.
 
 ### Redis Data Structures
 Understanding Redis keys is crucial for debugging and state management:
 *   `map:h2b:<oid>`: String. Stores the mapped Binance Order ID for a given Hyperliquid Order ID.
-*   `pos:delta:<coin>`: String (Float). Stores the accumulated position difference that needs to be synced.
+*   `pos:delta:<coin>`: String (Float). Stores the accumulated position difference. **Reset during reconciliation.**
 *   `orderLock:<oid>`: String (TTL 10s). Distributed lock to prevent race conditions during order updates.
-*   `exposure:<coin>`: Hash. Tracks current exposure for risk management calculations.
+*   `exposure:tp:<coin>`: String. Stores the active Take Profit (Reduce-Only) order ID for a coin.
 
 ## 4. Agent Workflow Rules
 

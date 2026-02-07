@@ -44,16 +44,17 @@ class ConsistencyEngine {
   /**
    * Check if we should process this Hyperliquid order
    * Checks for duplicates and existing active Binance orders
+   * @param {string} userAddress
    * @param {string} oid 
    */
-  async shouldProcessHyperOrder(oid) {
+  async shouldProcessHyperOrder(userAddress, oid) {
     // 1. Atomic check-and-set to prevent race conditions (Duplicate Orders)
     // We use a temporary "processing" flag in Redis
-    const lockKey = `orderLock:${oid}`;
+    const lockKey = `orderLock:${userAddress}:${oid}`;
     const acquired = await redis.set(lockKey, 'true', 'NX', 'EX', 30); // 30s lock
     
     if (!acquired) {
-      logger.debug(`Order ${oid} is already being processed or locked, skipping`);
+      logger.debug(`Order ${userAddress}:${oid} is already being processed or locked, skipping`);
       return false;
     }
 
@@ -63,19 +64,19 @@ class ConsistencyEngine {
       return false;
     }
 
-    const mapping = await orderMapper.getBinanceOrder(oid);
+    const mapping = await orderMapper.getBinanceOrder(userAddress, oid);
     if (mapping) {
       try {
         const status = await binanceClient.getOrderStatus(mapping.symbol, mapping.orderId);
         if (['NEW', 'PARTIALLY_FILLED'].includes(status)) {
-          logger.info(`Active Binance order exists for ${oid} (${mapping.orderId}), skipping`);
+          logger.info(`Active Binance order exists for ${userAddress}:${oid} (${mapping.orderId}), skipping`);
           return false;
         }
         // If it's not active, we might want to allow re-processing if it's a sync
         // But usually, we don't want to double-process.
         return false;
       } catch (error) {
-        logger.warn(`Mapping exists for ${oid} but Binance check failed, skipping safety`, error);
+        logger.warn(`Mapping exists for ${userAddress}:${oid} but Binance check failed, skipping safety`, error);
         return false;
       }
     }
@@ -85,10 +86,11 @@ class ConsistencyEngine {
 
   /**
    * Release the processing lock for an order
+   * @param {string} userAddress
    * @param {string} oid 
    */
-  async releaseOrderLock(oid) {
-    await redis.del(`orderLock:${oid}`);
+  async releaseOrderLock(userAddress, oid) {
+    await redis.del(`orderLock:${userAddress}:${oid}`);
   }
 
   /**
@@ -96,10 +98,11 @@ class ConsistencyEngine {
    * This updates the Pending Delta to reflect that we are "Ahead" of the target.
    * 
    * @param {string} hyperOid 
-   * @param {object} fillDetails { coin, side: 'B'/'A', size: string/number, ... }
+   * @param {object} fillDetails { coin, side: 'B'/'A', size: string/number, userAddress, ... }
    */
   async recordOrphanFill(hyperOid, fillDetails) {
-    const key = `orphanFill:${hyperOid}`;
+    const userAddress = fillDetails.userAddress;
+    const key = `orphanFill:${userAddress}:${hyperOid}`;
     
     // Check if already recorded to avoid double-counting
     const exists = await redis.exists(key);
@@ -109,7 +112,7 @@ class ConsistencyEngine {
     const followerSize = parseFloat(fillDetails.size);
     const masterSize = await positionCalculator.getReversedMasterSize(
       followerSize, 
-      this.primaryTargetAddress
+      userAddress
     );
 
     const pipeline = redis.pipeline();
@@ -139,10 +142,11 @@ class ConsistencyEngine {
   /**
    * Handle Hyperliquid Fill Event
    * Checks if this fill resolves a previous orphan state
+   * @param {string} userAddress
    * @param {string} oid 
    */
-  async handleHyperliquidFill(oid) {
-    const orphanKey = `orphanFill:${oid}`;
+  async handleHyperliquidFill(userAddress, oid) {
+    const orphanKey = `orphanFill:${userAddress}:${oid}`;
     const orphan = await redis.hgetall(orphanKey);
     
     if (orphan && orphan.coin) {
@@ -157,7 +161,7 @@ class ConsistencyEngine {
       if (!masterSize) {
          masterSize = await positionCalculator.getReversedMasterSize(
            parseFloat(orphan.size),
-           this.primaryTargetAddress
+           userAddress
          );
       }
 
