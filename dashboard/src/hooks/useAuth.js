@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 
 export const useAuth = () => {
-  const [token, setToken] = useState(localStorage.getItem('hf_token'));
+  const [token, setToken] = useState(sessionStorage.getItem('hf_token'));
   const [isConfigured, setIsConfigured] = useState(true);
 
   const checkStatus = useCallback(async () => {
@@ -19,12 +19,12 @@ export const useAuth = () => {
   }, [checkStatus]);
 
   const login = (newToken) => {
-    localStorage.setItem('hf_token', newToken);
+    sessionStorage.setItem('hf_token', newToken);
     setToken(newToken);
   };
 
   const logout = () => {
-    localStorage.removeItem('hf_token');
+    sessionStorage.removeItem('hf_token');
     setToken(null);
   };
 

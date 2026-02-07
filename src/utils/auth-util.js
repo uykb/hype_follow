@@ -83,7 +83,7 @@ class AuthUtil {
    * Generate a JWT for a session
    */
   generateJWT() {
-    return jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '12h' });
+    return jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '2h' });
   }
 
   /**
