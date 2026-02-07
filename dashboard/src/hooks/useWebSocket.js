@@ -15,8 +15,10 @@ export const useWebSocket = (token) => {
     let reconnectTimer;
 
     const connect = () => {
-      // Pass token as protocol for simple WS auth
-      ws = new WebSocket(WS_URL, ['hf-auth', token]);
+      // Pass token via query parameter for more robust auth
+      const url = new URL(WS_URL);
+      url.searchParams.set('token', token);
+      ws = new WebSocket(url.toString());
 
       ws.onopen = () => {
         setConnected(true);

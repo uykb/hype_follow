@@ -137,20 +137,13 @@ function startServer() {
   // --- WebSocket Logic ---
 
   wss.on('connection', (ws, req) => {
-    // Check for auth in protocols
-    const protocols = req.headers['sec-websocket-protocol'];
-    let token = null;
-    if (protocols) {
-      const parts = protocols.split(',').map(p => p.trim());
-      const authIndex = parts.indexOf('hf-auth');
-      if (authIndex !== -1 && parts[authIndex + 1]) {
-        token = parts[authIndex + 1];
-      }
-    }
+    // Auth via Query Parameter (more robust for browsers)
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const token = url.searchParams.get('token');
 
     const decoded = authUtil.verifyJWT(token);
     if (!decoded) {
-      logger.warn('Unauthorized WS connection attempt');
+      logger.warn('Unauthorized WS connection attempt', { hasToken: !!token });
       ws.close(4001, 'Unauthorized');
       return;
     }
