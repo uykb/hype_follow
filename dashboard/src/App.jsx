@@ -1,9 +1,10 @@
 import React from 'react';
-import { ThemeProvider, CssBaseline, Container, Grid, Box, Typography, CircularProgress } from '@mui/material';
-import { TrendingUp, Speed, AccountBalance, CheckCircle } from '@mui/icons-material';
+import { ThemeProvider, CssBaseline, Container, Grid, Box, Typography, CircularProgress, Button, IconButton, Tooltip } from '@mui/material';
+import { TrendingUp, Speed, AccountBalance, CheckCircle, Logout } from '@mui/icons-material';
 
 import theme from './theme/theme';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useAuth } from './hooks/useAuth';
 
 import Header from './components/Header';
 import StatCard from './components/StatCard';
@@ -13,9 +14,31 @@ import FollowedUsers from './components/FollowedUsers';
 import LogsPanel from './components/LogsPanel';
 import EquityChart from './components/EquityChart';
 import TradeHistory from './components/TradeHistory';
+import ConfigPanel from './components/ConfigPanel';
+import Login from './pages/Login';
+import Setup from './pages/Setup';
 
 function App() {
-  const { snapshot, logs, connected, lastUpdate } = useWebSocket();
+  const { token, isConfigured, login, logout } = useAuth();
+  const { snapshot, logs, connected, lastUpdate } = useWebSocket(token);
+
+  if (!isConfigured) {
+    return (
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <Setup onComplete={login} />
+      </ThemeProvider>
+    );
+  }
+
+  if (!token) {
+    return (
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <Login onLogin={login} />
+      </ThemeProvider>
+    );
+  }
 
   if (!snapshot) {
     return (
@@ -23,7 +46,8 @@ function App() {
         <CssBaseline />
         <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', bgcolor: 'background.default' }}>
           <CircularProgress size={60} thickness={4} />
-          <Typography variant="h6" sx={{ mt: 3, color: 'text.secondary' }}>HypeFollow 系统初始化中...</Typography>
+          <Typography variant="h6" sx={{ mt: 3, color: 'text.secondary' }}>HypeFollow 系统连接中...</Typography>
+          <Button onClick={logout} sx={{ mt: 2 }}>退出登录</Button>
         </Box>
       </ThemeProvider>
     );
@@ -39,7 +63,13 @@ function App() {
             connected={connected} 
             lastUpdate={lastUpdate} 
             emergencyStop={config.emergencyStop} 
-        />
+        >
+          <Tooltip title="退出登录">
+            <IconButton onClick={logout} color="inherit" size="small">
+              <Logout fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        </Header>
 
         <Container maxWidth="xl" sx={{ mt: 3 }}>
           {/* Top Stats Row */}
@@ -67,10 +97,10 @@ function App() {
             {/* Main Content Area */}
             <Grid item xs={12} lg={8}>
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                 <EquityChart data={history?.equity || []} />
-                 <PositionsList positions={accounts.binance.positions} drifts={drifts} />
-                 <Grid container spacing={3}>
-
+                <EquityChart data={history?.equity || []} />
+                <PositionsList positions={accounts.binance.positions} drifts={drifts} />
+                <ConfigPanel token={token} />
+                <Grid container spacing={3}>
                   <Grid item xs={12} md={6}>
                     <OrderMappings mappings={mappings} />
                   </Grid>

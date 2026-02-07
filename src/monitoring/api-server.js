@@ -9,6 +9,9 @@ const logger = require('../utils/logger');
 const dataCollector = require('./data-collector');
 const orderValidator = require('../core/order-validator');
 
+const authUtil = require('../utils/auth-util');
+const authMiddleware = require('../middleware/auth-middleware');
+
 const PORT = process.env.MONITORING_PORT || 49618;
 
 function startServer() {
@@ -22,14 +25,88 @@ function startServer() {
   app.use(cors());
   app.use(express.json());
 
-  // --- API Routes ---
+  // --- Admin & Auth Routes ---
   
+  app.get('/api/admin/status', async (req, res) => {
+    const configured = await authUtil.isConfigured();
+    res.json({ configured });
+  });
+
+  app.get('/api/admin/setup-qr', async (req, res) => {
+    const configured = await authUtil.isConfigured();
+    if (configured) {
+      return res.status(403).json({ error: 'System already configured' });
+    }
+    const data = await authUtil.generateSetupData();
+    res.json(data);
+  });
+
+  app.post('/api/admin/setup', async (req, res) => {
+    const configured = await authUtil.isConfigured();
+    if (configured) {
+      return res.status(403).json({ error: 'System already configured' });
+    }
+    const { token, secret } = req.body;
+    if (authUtil.verifyToken(token, secret)) {
+      await authUtil.saveSecret(secret);
+      const jwt = authUtil.generateJWT();
+      res.json({ success: true, token: jwt });
+    } else {
+      res.status(400).json({ error: 'Invalid token' });
+    }
+  });
+
+  app.post('/api/admin/login', async (req, res) => {
+    const { token } = req.body;
+    const secret = await authUtil.getSecret();
+    if (!secret) {
+      return res.status(403).json({ error: 'System not configured' });
+    }
+    if (authUtil.verifyToken(token, secret)) {
+      const jwt = authUtil.generateJWT();
+      res.json({ success: true, token: jwt });
+    } else {
+      res.status(400).json({ error: 'Invalid token' });
+    }
+  });
+
+  // --- Protected API Routes ---
+  app.use('/api', authMiddleware);
+
   app.get('/api/snapshot', (req, res) => {
     res.json(dataCollector.getSnapshot());
   });
 
   app.get('/api/logs', (req, res) => {
     res.json(dataCollector.recentLogs);
+  });
+
+  app.get('/api/config', (req, res) => {
+    // Return non-sensitive config
+    const safeConfig = {
+      trading: {
+        mode: config.get('trading.mode'),
+        fixedRatio: config.get('trading.fixedRatio'),
+        equalRatio: config.get('trading.equalRatio'),
+        minOrderSize: config.get('trading.minOrderSize')
+      },
+      riskControl: {
+        supportedCoins: config.get('riskControl.supportedCoins'),
+        reductionThreshold: config.get('riskControl.reductionThreshold')
+      },
+      hyperliquid: {
+        followedUsers: config.get('hyperliquid.followedUsers')
+      }
+    };
+    res.json(safeConfig);
+  });
+
+  app.post('/api/config/update', async (req, res) => {
+    // In a real scenario, we'd write to a file or Redis.
+    // For this MVP, we'll log it and acknowledge.
+    // NOTE: In production, you'd want to persist this to config/local.json or Redis.
+    logger.info('Config update received (MVP - not yet persisted to disk)', req.body);
+    res.json({ success: true, message: 'Settings updated successfully (Note: Changes may require restart)' });
   });
 
   app.get('/api/orders/validate', async (req, res) => {
@@ -59,8 +136,26 @@ function startServer() {
 
   // --- WebSocket Logic ---
 
-  wss.on('connection', (ws) => {
-    logger.info('New monitoring client connected');
+  wss.on('connection', (ws, req) => {
+    // Check for auth in protocols
+    const protocols = req.headers['sec-websocket-protocol'];
+    let token = null;
+    if (protocols) {
+      const parts = protocols.split(',').map(p => p.trim());
+      const authIndex = parts.indexOf('hf-auth');
+      if (authIndex !== -1 && parts[authIndex + 1]) {
+        token = parts[authIndex + 1];
+      }
+    }
+
+    const decoded = authUtil.verifyJWT(token);
+    if (!decoded) {
+      logger.warn('Unauthorized WS connection attempt');
+      ws.close(4001, 'Unauthorized');
+      return;
+    }
+
+    logger.info('Authenticated monitoring client connected');
     
     // Send initial snapshot
     ws.send(JSON.stringify({ type: 'snapshot', data: dataCollector.getSnapshot() }));

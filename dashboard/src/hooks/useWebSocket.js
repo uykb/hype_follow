@@ -2,18 +2,21 @@ import { useState, useEffect } from 'react';
 
 const WS_URL = window.location.origin.replace(/^http/, 'ws');
 
-export const useWebSocket = () => {
+export const useWebSocket = (token) => {
   const [snapshot, setSnapshot] = useState(null);
   const [logs, setLogs] = useState([]);
   const [connected, setConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(null);
 
   useEffect(() => {
+    if (!token) return;
+
     let ws;
     let reconnectTimer;
 
     const connect = () => {
-      ws = new WebSocket(WS_URL);
+      // Pass token as protocol for simple WS auth
+      ws = new WebSocket(WS_URL, ['hf-auth', token]);
 
       ws.onopen = () => {
         setConnected(true);

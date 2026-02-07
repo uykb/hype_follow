@@ -7,7 +7,7 @@ import {
   Menu as MenuIcon 
 } from '@mui/icons-material';
 
-const Header = ({ connected, lastUpdate, emergencyStop, onEmergencyToggle }) => {
+const Header = ({ connected, lastUpdate, emergencyStop, onEmergencyToggle, children }) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
 
@@ -32,16 +32,19 @@ const Header = ({ connected, lastUpdate, emergencyStop, onEmergencyToggle }) => 
           </Typography>
         )}
 
-        <Button 
-          color={emergencyStop ? "error" : "success"} 
-          variant="contained" 
-          size="small"
-          startIcon={<ErrorIcon />}
-          sx={{ fontWeight: 'bold' }}
-          disabled // For now, read-only as per request logic usually, but user asked for deep customization. Assuming the logic for toggling isn't passed yet, I'll keep it static or accept a prop.
-        >
-          {emergencyStop ? "已停止" : "运行中"}
-        </Button>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Button 
+            color={emergencyStop ? "error" : "success"} 
+            variant="contained" 
+            size="small"
+            startIcon={<ErrorIcon />}
+            sx={{ fontWeight: 'bold' }}
+            disabled
+          >
+            {emergencyStop ? "已停止" : "运行中"}
+          </Button>
+          {children}
+        </Box>
       </Toolbar>
     </AppBar>
   );
