@@ -50,9 +50,8 @@ class ExposureManager {
       // 4.1 核心风控：硬性阈值强制减半 (Circuit Breaker)
       const reductionThreshold = config.get('riskControl.reductionThreshold')[coin] || 999999;
       if (absFollower >= reductionThreshold) {
-        logger.warn(`[Reconciler] ${coin} 触发硬性风控阈值 (${absFollower} >= ${reductionThreshold})，执行强制减半！`);
-        await this.fixDrift(coin, followerSize > 0 ? 'A' : 'B', absFollower / 2);
-        return; // 强制减半后结束本次对账
+        logger.error(`[Reconciler] ${coin} 触发硬性风控阈值 (${absFollower} >= ${reductionThreshold})！建议立即手动减持至 ${absFollower / 2}`);
+        return; 
       }
 
       // 4.2 计算目标仓位
@@ -85,16 +84,13 @@ class ExposureManager {
         return;
       }
 
-      logger.warn(`[Reconciler] 检测到仓位漂移 [${coin}]: 目标=${targetSize}, 实际=${followerSize}, 偏差=${drift}`);
+      logger.warn(`[Reconciler] 检测到仓位漂移 [${coin}]: 目标=${targetSize.toFixed(4)}, 实际=${followerSize.toFixed(4)}, 偏差=${drift.toFixed(4)}`);
 
-      // 6. 执行修复动作
-      if (drift > 0) {
-        // 欠仓：补仓 (Buy)
-        await this.fixDrift(coin, 'B', absDrift, masterPosObj?.entryPx);
-      } else {
-        // 超仓：减仓 (Sell)
-        await this.fixDrift(coin, 'A', absDrift, masterPosObj?.entryPx);
-      }
+      // 6. 仅记录建议，不执行修复动作 (用户要求：只做对账检测，不要执行订单修复)
+      const side = drift > 0 ? 'B' : 'A';
+      const roundedDrift = this.roundQuantity(absDrift, coin);
+      
+      logger.info(`[Reconciler] 建议修复动作: ${coin} ${side} ${roundedDrift} (当前配置：自动修复已禁用)`);
 
       // 7. 对账后重置该币种的 Delta 记录，防止与 WS 增量冲突
       await require('./position-tracker').consumePendingDelta(coin, 0); // 清零
