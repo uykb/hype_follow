@@ -1,12 +1,12 @@
 # HypeFollow 🚀
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue.svg?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.2.0-blue.svg?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge)
 ![Status](https://img.shields.io/badge/status-active-success.svg?style=for-the-badge)
 
 **HypeFollow** is an advanced, automated copy-trading system that synchronizes "Smart Money" movements from **Hyperliquid** (DEX) directly to your **Binance Futures** (CEX) account in real-time.
 
-Designed for high-performance and reliability, HypeFollow bridges the gap between on-chain transparency and CEX liquidity.
+Designed for high-performance and reliability, HypeFollow bridges the gap between on-chain transparency and CEX liquidity with a focus on security and precise monitoring.
 
 ---
 
@@ -15,57 +15,38 @@ Designed for high-performance and reliability, HypeFollow bridges the gap betwee
 ### 🔄 Dual-Channel Synchronization
 *   **Limit Order Sync**: Real-time tracking of `orderUpdates`. Creates, modifies, and cancels limit orders instantly to match the master.
 *   **Market Execution Sync**: Listens to `userFills` to capture aggressive market entries/exits.
+*   **Event Serialization**: Per-order task queues prevent race conditions during rapid "Cancel + Add" sequences.
 
 ### ⚖️ Smart Position Management
-*   **Equal Mode**: Automatically calculates position size based on the equity ratio between the Master (HL) and Follower (Binance).
-    *   *Formula*: `Size = MasterSize * (MyEquity / MasterEquity) * Ratio`
-*   **Fixed Mode**: Follows using a fixed multiplier.
-    *   *Formula*: `Size = MasterSize * FixedRatio`
+*   **Multiple Modes**:
+    *   **Equal Mode**: Scales position size based on the equity ratio between Master (HL) and Follower (Binance).
+    *   **Fixed Mode**: Follows using a fixed multiplier ratio.
+*   **Pending Delta Tracking**: Automatically accumulates small adjustments that fall below Binance's minimum order size and executes them once the threshold is met.
 
-### 🛡️ Advanced Risk Control
-*   **Exposure Rebalancing (New)**: Automatically detects when your exposure exceeds the target ratio (due to minimum order size constraints) and places **Reduce-Only Take Profit** orders to lock in profits and realign risk.
-*   **Asset Whitelist**: Only trades configured assets (e.g., BTC, ETH, SOL).
-*   **Safety Limits**: Configurable Maximum Position Size and Emergency Stop switches.
-*   **One-Way Mode Enforcement**: Strictly adheres to Binance One-Way Mode for consistency.
+### 🛡️ Secure Administration
+*   **TOTP Authentication**: Secured by Google Authenticator / 2FA. No hardcoded passwords.
+*   **JWT Authorization**: All API and WebSocket connections are protected by short-lived, secure tokens.
+*   **Auto-Logout**: Session-based storage ensures you are logged out when the browser tab is closed.
 
-### 📊 Modern Monitoring Dashboard
-*   **Live Dashboard**: Built with **React** and **MUI**, running on port `49618`.
-*   **Real-time Metrics**: View Hyperliquid & Binance balances, PnL, and total equity.
-*   **Order Mapping**: Visual status of synced orders.
-*   **System Logs**: Live streaming logs for debugging and monitoring.
-
-### 🐳 Deployment
-*   **Single-Container Architecture**: Redis is embedded within the application image. No complex orchestration required.
-*   **Docker Ready**: Simple `docker-compose` or `docker run` deployment.
-
----
-
-## 🛠️ Technology Stack
-
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| **Runtime** | Node.js v20+ | Core logic execution |
-| **Frontend** | React, MUI | Monitoring Dashboard |
-| **Data Store** | Redis (Embedded) | State persistence & Order mapping |
-| **Exchange** | Hyperliquid WS | Source feed (WebSocket) |
-| **Exchange** | Binance Futures API | Execution target (REST/WS) |
+### 📊 Real-time Monitoring & Control
+*   **Drift Detection**: Real-time calculation of "Target vs Actual" position drift. Highlighting discrepancies for manual review.
+*   **Dynamic Configuration**: Modify trading modes and multipliers directly from the dashboard without restarting the service.
+*   **Live Metrics**: Integrated PnL tracking, equity charts, and streaming system logs.
 
 ---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-*   **Binance Futures Account**: API Key & Secret (Enable Futures Trading, Disable Withdrawals).
-*   **Hyperliquid Address**: The wallet address of the trader you want to follow.
-*   **Docker**: Installed on your server/machine.
+*   **Binance Futures Account**: API Key & Secret (Enable Futures, Disable Withdrawals).
+*   **Hyperliquid Address**: The public wallet address of the trader(s) you want to follow.
+*   **Authenticator App**: Google Authenticator, 1Password, or similar for 2FA setup.
 
-### Option 1: Docker Compose (Recommended)
+### Deployment (Docker Compose)
 
-Create a `docker-compose.yml` file:
-
+1. Create a `docker-compose.yml`:
 ```yaml
 version: '3.8'
-
 services:
   hypefollow:
     image: ghcr.io/uykb/hypefollow:main
@@ -73,115 +54,65 @@ services:
     ports:
       - "49618:49618"
     environment:
-      - BINANCE_API_KEY=your_key_here
-      - BINANCE_API_SECRET=your_secret_here
+      - BINANCE_API_KEY=your_key
+      - BINANCE_API_SECRET=your_secret
       - TRADING_MODE=fixed
       - FIXED_RATIO=0.1
-      - NODE_ENV=production
-    restart: unless-stopped
+      - JWT_SECRET=your_random_secret_string
     volumes:
-      - redis_data:/var/lib/redis
-
-volumes:
-  redis_data:
+      - ./data:/root/HypeFollow/data
+    restart: unless-stopped
 ```
 
-Run the container:
+2. Start the system:
 ```bash
 docker-compose up -d
 ```
 
-### Option 2: Manual Docker Run
-
-```bash
-docker run -d --name hypefollow \
-  --restart always \
-  -p 49618:49618 \
-  -v redis_data:/var/lib/redis \
-  -e BINANCE_API_KEY=your_key \
-  -e BINANCE_API_SECRET=your_secret \
-  -e TRADING_MODE=fixed \
-  -e FIXED_RATIO=0.1 \
-  ghcr.io/uykb/hypefollow:main
-```
+3. **Initial Setup**:
+   - Access `http://your-server-ip:49618`.
+   - On first run, you will see a **Setup QR Code**.
+   - Scan it with your Authenticator app and enter the 6-digit code to bind your device.
 
 ---
 
 ## ⚙️ Configuration
 
-### Environment Variables (`.env`)
-
+### Environment Variables
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `BINANCE_API_KEY` | Your Binance API Key | **Required** |
-| `BINANCE_API_SECRET` | Your Binance API Secret | **Required** |
-| `TRADING_MODE` | `equal` or `fixed` | `equal` |
-| `EQUAL_RATIO` | Multiplier for Equal mode | `1.0` |
+| `BINANCE_API_KEY` | Binance API Key | **Required** |
+| `BINANCE_API_SECRET` | Binance API Secret | **Required** |
+| `TRADING_MODE` | `equal` or `fixed` | `fixed` |
 | `FIXED_RATIO` | Multiplier for Fixed mode | `0.1` |
-| `BINANCE_TESTNET` | Use Binance Testnet | `false` |
-| `MONITORING_PORT` | Dashboard Access Port | `49618` |
+| `JWT_SECRET` | Secret key for auth tokens | `random-string` |
+| `MONITORING_PORT` | Dashboard Port | `49618` |
 
-### Advanced Strategy (`config/default.js`)
-
-Modify the configuration file to set up followed users and risk limits.
-
-```javascript
-module.exports = {
-  hyperliquid: {
-    // List of Smart Money addresses to follow
-    followedUsers: [
-      '0x1234567890abcdef...',
-    ]
-  },
-  
-  riskControl: {
-    // Only trade these coins
-    supportedCoins: ['BTC', 'ETH', 'SOL'],
-    
-    // Max position size (in coins)
-    maxPositionSize: {
-      BTC: 1.0,
-      ETH: 10.0,
-      SOL: 100.0
-    }
-  },
-  
-  trading: {
-    // Minimum Order Sizes (Critical for Binance compliance)
-    minOrderSize: {
-      BTC: 0.002,
-      ETH: 0.007,
-      SOL: 0.04
-    }
-  }
-};
+### Manual Auth Reset
+If you lose your Authenticator device, you can reset the security configuration by running:
+```bash
+# Inside the container
+npm run reset-auth
 ```
 
 ---
 
-## 📉 Exposure Manager
+## 📉 Position Drift Monitoring
 
-HypeFollow v1.1 introduces an **Exposure Manager** to handle minimum order size discrepancies.
+HypeFollow tracks the difference between your **Actual Position** and the **Target Position** (Master Position * Ratio).
 
-**The Problem**:
-If the Master executes small orders (e.g., 0.001 BTC) but Binance requires a minimum of 0.002 BTC, HypeFollow forces the minimum size (0.002 BTC). Over time, this causes your position to grow faster than the Master's relative position.
-
-**The Solution**:
-The Exposure Manager runs after every trade:
-1.  Checks your actual position vs. the theoretical target position.
-2.  If `Actual > Target` significantly, it calculates a **Take Profit** price (Entry ± 0.1%).
-3.  Places a **Reduce-Only Limit Order** for the excess amount.
-4.  This locks in profit on the "oversized" portion and realigns your exposure automatically.
+*   **Why Drift Happens**: Binance's minimum order requirements ($5-$20) or network latency can cause small deviations.
+*   **Monitoring**: The dashboard highlights any drift > 1% in yellow.
+*   **Action**: HypeFollow **does not** automatically execute corrective trades to avoid "fighting" with active orders. It is recommended to review large drifts manually.
 
 ---
 
-## 🖥️ Dashboard
+## 🖥️ Dashboard Overview
 
-Access the dashboard at `http://localhost:49618`.
-
-*   **Overview**: Check Sync Status and Account Balances.
-*   **Logs**: Watch the `[Sync]` and `[ExposureManager]` logs to see the bot in action.
-*   **Positions**: Monitor current active positions and their PnL.
+- **Equity Chart**: Visualizes your performance relative to the Master.
+- **Positions**: Live view of Binance positions with real-time Drift metrics.
+- **System Config**: UI for adjusting trading parameters on the fly.
+- **Log Panel**: High-verbosity streaming logs for full transparency of execution logic.
 
 ---
 
@@ -190,9 +121,9 @@ Access the dashboard at `http://localhost:49618`.
 **Trading cryptocurrencies involves significant risk.**
 
 *   **HypeFollow** is experimental software provided "as is".
-*   The developers are not responsible for any financial losses incurred.
-*   Always test on **Binance Testnet** first.
-*   Ensure you understand the risks of Copy Trading (e.g., latency, slippage, liquidation).
+*   The developers are not responsible for any financial losses.
+*   Always test with small amounts or on **Binance Testnet** first.
+*   Ensure you understand the mechanics of Copy Trading (latency, slippage, and liquidation).
 
 ---
 
