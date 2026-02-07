@@ -143,7 +143,10 @@ function startServer() {
 
     const decoded = authUtil.verifyJWT(token);
     if (!decoded) {
-      logger.warn('Unauthorized WS connection attempt', { hasToken: !!token });
+      logger.warn(`Unauthorized WS connection attempt from ${req.socket.remoteAddress}`, { 
+        url: req.url,
+        hasToken: !!token 
+      });
       ws.close(4001, 'Unauthorized');
       return;
     }
