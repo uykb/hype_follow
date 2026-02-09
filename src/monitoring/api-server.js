@@ -8,6 +8,7 @@ const path = require('path');
 const logger = require('../utils/logger');
 const dataCollector = require('./data-collector');
 const orderValidator = require('../core/order-validator');
+const binanceClient = require('../binance/api-client');
 
 const authUtil = require('../utils/auth-util');
 const authMiddleware = require('../middleware/auth-middleware');
