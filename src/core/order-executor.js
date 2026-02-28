@@ -68,12 +68,33 @@ class OrderExecutor {
       const isClosing = (currentPos > 0 && side === 'A') || (currentPos < 0 && side === 'B');
       const actionType = isClosing ? 'close' : 'open';
 
-      let quantity = await positionCalculator.calculateQuantity(
-        coin,
-        Math.abs(signedMasterOrderSize), 
-        userAddress,
-        actionType
-      );
+      let quantity;
+      
+      // Check for user-specific strategies
+      const userStrategies = config.get('trading.userStrategies') || {};
+      const userStrategy = userStrategies[userAddress] && userStrategies[userAddress][coin] ? userStrategies[userAddress][coin].strategy : null;
+
+      if (userStrategy === 'closeAllOnSell' && side === 'A') {
+        // Special Martingale strategy: If selling, sell the entire current position
+        const absPos = Math.abs(currentPos);
+        if (absPos > 0) {
+          quantity = absPos;
+          logger.info(`[OrderExecutor] Applied 'closeAllOnSell' strategy for ${userAddress} on ${coin}. Selling entire position: ${quantity}`);
+          // Force reduce-only to avoid opening a short position
+          orderData.reduceOnly = true;
+        } else {
+          logger.info(`[OrderExecutor] 'closeAllOnSell' strategy skipped for ${userAddress} on ${coin}: No current position to close.`);
+          quantity = 0;
+        }
+      } else {
+        // Normal quantity calculation
+        quantity = await positionCalculator.calculateQuantity(
+          coin,
+          Math.abs(signedMasterOrderSize), 
+          userAddress,
+          actionType
+        );
+      }
 
       // 3.5 Cap Quantity ONLY for Reduce-Only orders to avoid Binance -2022 error
       // If HL order is NOT reduceOnly, we allow it to exceed position (flipping)
@@ -242,12 +263,29 @@ class OrderExecutor {
       const isClosing = (currentPos > 0 && side === 'A') || (currentPos < 0 && side === 'B');
       const actionType = isClosing ? 'close' : 'open';
 
-      let quantity = await positionCalculator.calculateQuantity(
-        coin,
-        absTotalSize,
-        userAddress,
-        actionType
-      );
+      let quantity;
+
+      // Check for user-specific strategies
+      const userStrategies = config.get('trading.userStrategies') || {};
+      const userStrategy = userStrategies[userAddress] && userStrategies[userAddress][coin] ? userStrategies[userAddress][coin].strategy : null;
+
+      if (userStrategy === 'closeAllOnSell' && side === 'A') {
+        const absPos = Math.abs(currentPos);
+        if (absPos > 0) {
+          quantity = absPos;
+          logger.info(`[OrderExecutor] Applied 'closeAllOnSell' strategy for ${userAddress} on ${coin} (Market). Selling entire position: ${quantity}`);
+        } else {
+          logger.info(`[OrderExecutor] 'closeAllOnSell' strategy skipped for ${userAddress} on ${coin} (Market): No current position to close.`);
+          quantity = 0;
+        }
+      } else {
+        quantity = await positionCalculator.calculateQuantity(
+          coin,
+          absTotalSize,
+          userAddress,
+          actionType
+        );
+      }
 
       if (!quantity || quantity <= 0) {
         

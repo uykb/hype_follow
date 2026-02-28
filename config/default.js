@@ -65,6 +65,15 @@ module.exports = {
       ETH: 0.007,
       SOL: 0.04,
       HYPE: 1.0 // Minimum order size for HYPE
+    },
+
+    // User-specific strategies
+    userStrategies: {
+      '0xdc899ed4a80e7bbe7c86307715507c828901f196': {
+        HYPE: {
+          strategy: 'closeAllOnSell'
+        }
+      }
     }
   },
   monitoring: {
