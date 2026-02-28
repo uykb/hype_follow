@@ -14,9 +14,6 @@ class OrderExecutor {
     this.positionMonitorActive = false;
     this.positionMonitorTimer = null;
     this.lastKnownPosition = null;
-    this.isSyncing = false;
-    this.lastSyncTime = 0;
-    this.SYNC_COOLDOWN = 10000; // 10 seconds cooldown between syncs
   }
   /**
    * Automatically adjusts the Take Profit (closeAllOnSell) order size when position changes
@@ -309,13 +306,6 @@ class OrderExecutor {
 
     const checkPosition = async () => {
       try {
-        const now = Date.now();
-        
-        // Skip if already syncing or within cooldown period
-        if (this.isSyncing || (now - this.lastSyncTime) < this.SYNC_COOLDOWN) {
-          return;
-        }
-
         const position = await binanceClient.getPositionDetails(coin);
         // Round to 4 decimal places to avoid floating point precision issues
         const currentPos = Math.round((position ? position.amount : 0) * 10000) / 10000;
@@ -328,18 +318,10 @@ class OrderExecutor {
 
         const positionDiff = Math.abs(currentPos - this.lastKnownPosition);
 
-        // Use a small epsilon for float comparison, but also require minimum threshold
         if (positionDiff >= POSITION_CHANGE_THRESHOLD) {
           logger.info(`[PositionMonitor] Position changed: ${this.lastKnownPosition} -> ${currentPos} (diff: ${positionDiff}). Triggering order sync...`);
           
-          this.isSyncing = true;
-          this.lastSyncTime = now;
-          
-          try {
-            await this.syncUserOrders(userAddress, { isInitialSync: false });
-          } finally {
-            this.isSyncing = false;
-          }
+          await this.syncUserOrders(userAddress, { isInitialSync: false });
           
           // Update last known position after sync
           this.lastKnownPosition = currentPos;
