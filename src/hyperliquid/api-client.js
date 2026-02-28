@@ -51,6 +51,32 @@ class HyperliquidAPIClient {
   }
 
   /**
+   * Get user open orders for a specific coin
+   * @param {string} address User address
+   * @param {string} coin Coin symbol (e.g., 'HYPE')
+   * @returns {Promise<Array>} List of open orders
+   */
+  async getUserOpenOrders(address, coin) {
+    try {
+      const response = await axios.post(this.baseUrl, {
+        type: 'openOrders',
+        user: address,
+        coin: coin
+      });
+      
+      // The response should be an array of orders
+      if (Array.isArray(response.data)) {
+        return response.data;
+      }
+      
+      return [];
+    } catch (error) {
+      logger.warn(`Failed to get open orders for ${coin}`, error.message);
+      return [];
+    }
+  }
+
+  /**
    * Get specific order status
    * @param {string} address User address
    * @param {number|string} oid Order ID
