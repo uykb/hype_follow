@@ -98,25 +98,101 @@ class OrderExecutor {
       
       logger.info(`[OrderExecutor] Starting sync for user ${userAddress}...`);
       
-      // 1. Get current Binance position for this user
-      let position = await binanceClient.getPositionDetails('HYPE');
-      let currentPos = position ? position.amount : 0;
+      // 1. Get position FIRST - retry multiple times to ensure we have the latest data
+      let position = null;
+      let currentPos = 0;
+      let positionRetries = 5;
       
-      // 2. Get all open orders from Hyperliquid for this user
+      for (let i = 0; i < positionRetries; i++) {
+        position = await binanceClient.getPositionDetails('HYPE');
+        currentPos = position ? position.amount : 0;
+        
+        if (currentPos !== 0) {
+          break;
+        }
+        
+        // Wait a bit before retry
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+      logger.info(`[OrderExecutor] Current Binance position for HYPE: ${currentPos}`);
+      
+      // 2. Get all open orders from Hyperliquid
       let hlOrders = await apiClient.getUserOpenOrders(userAddress, 'HYPE');
       
-      // 2.1 Check if there are buy orders (new positions opening)
-      const hasBuyOrder = hlOrders && hlOrders.length > 0 && hlOrders.some(o => o.side === 'B');
+      // 2.1 Separate SELL and BUY orders
+      const sellOrders = hlOrders ? hlOrders.filter(o => o.side === 'A') : [];
+      const buyOrders = hlOrders ? hlOrders.filter(o => o.side === 'B') : [];
       
       // 2.2 Get the last known HL orders from Redis to compare (for time difference detection)
       const lastHlOrdersStr = await redis.get(`martingale:last_hl_orders:${userAddress}`);
       const lastHlOrders = lastHlOrdersStr ? JSON.parse(lastHlOrdersStr) : [];
       const lastBuyOrderIds = new Set(lastHlOrders.filter(o => o.side === 'B').map(o => o.oid));
       
-      // 2.3 Check if this is a truly NEW buy order (not just a sync delay)
-      // A new buy order means the OID is not in the last known orders
-      const newBuyOrders = hasBuyOrder ? hlOrders.filter(o => o.side === 'B' && !lastBuyOrderIds.has(o.oid.toString())) : [];
+      // 2.3 Check if this is a truly NEW buy order
+      const newBuyOrders = buyOrders.filter(o => !lastBuyOrderIds.has(o.oid.toString()));
       const isNewPositionCycle = newBuyOrders.length > 0;
+      
+      // 2.4 CASE 1: Binance HAS position - just sync HL orders
+      if (currentPos !== 0) {
+        logger.info(`[OrderExecutor] Binance HAS position, will sync HL orders normally`);
+        // Continue to normal sync flow below
+      } 
+      // 2.5 CASE 2: Binance NO position - check HL position status
+      else {
+        logger.info(`[OrderExecutor] Binance has NO position, checking HL position status...`);
+        
+        try {
+          // Get HL position
+          const hlPositions = await apiClient.getUserPositions(userAddress);
+          const hlPosition = hlPositions.find(p => p.coin === 'HYPE');
+          
+          if (hlPosition && Math.abs(hlPosition.amount) > 0) {
+            // Get current market price
+            let currentPrice = 0;
+            try {
+              const ticker = await binanceClient.client.futuresPrice({ symbol: binanceClient.getBinanceSymbol('HYPE') });
+              currentPrice = parseFloat(ticker.price);
+            } catch (priceError) {
+              logger.warn(`[OrderExecutor] Failed to get current price`, priceError);
+            }
+            
+            const hlEntryPrice = parseFloat(hlPosition.entryPx) || 0;
+            const hlSize = Math.abs(hlPosition.amount);
+            
+            logger.info(`[OrderExecutor] HL Position - Size: ${hlSize}, Entry: ${hlEntryPrice}, Current: ${currentPrice}`);
+            
+            if (currentPrice > hlEntryPrice) {
+              // 浮盈状态：新增限价单等待触发
+              logger.info(`[OrderExecutor] HL in PROFIT (浮盈) - will add limit orders and wait for price pullback`);
+              // Continue to normal sync, the limit orders will be synced below
+            } else {
+              // 浮亏状态：市价买入同步持仓
+              logger.info(`[OrderExecutor] HL in LOSS (浮亏) - will execute market BUY to sync position`);
+              
+              try {
+                const marketOrder = await binanceClient.createMarketOrder('HYPE', 'B', hlSize, false);
+                if (marketOrder && marketOrder.orderId) {
+                  logger.info(`[OrderExecutor] Executed market BUY to sync position: ${hlSize}`);
+                  // Update position after execution
+                  position = await binanceClient.getPositionDetails('HYPE');
+                  currentPos = position ? position.amount : 0;
+                  logger.info(`[OrderExecutor] Position after market sync: ${currentPos}`);
+                }
+              } catch (marketError) {
+                logger.error(`[OrderExecutor] Failed to execute market order to sync position`, marketError);
+              }
+            }
+          } else {
+            logger.info(`[OrderExecutor] No position on both Binance and HL`);
+          }
+        } catch (hlError) {
+          logger.warn(`[OrderExecutor] Failed to get HL position`, hlError);
+        }
+      }
+      
+      if (!hlOrders || hlOrders.length === 0) {
+      }
       
       if (!hlOrders || hlOrders.length === 0) {
         logger.info(`[OrderExecutor] No open orders found for user ${userAddress}`);
@@ -133,6 +209,8 @@ class OrderExecutor {
           position = await binanceClient.getPositionDetails('HYPE');
           currentPos = position ? position.amount : 0;
           hlOrders = await apiClient.getUserOpenOrders(userAddress, 'HYPE');
+          sellOrders = hlOrders ? hlOrders.filter(o => o.side === 'A') : [];
+          buyOrders = hlOrders ? hlOrders.filter(o => o.side === 'B') : [];
         } else {
           logger.info(`[OrderExecutor] No new position after timeout, exiting sync`);
           return;
@@ -150,8 +228,48 @@ class OrderExecutor {
         await redis.set(`martingale:last_hl_orders:${userAddress}`, JSON.stringify(hlOrders), 'EX', 86400);
       }
       
-      // 3. Process each order
-      for (const hlOrder of hlOrders) {
+      // 3. Process SELL orders FIRST (take-profit orders) - only if we have position
+      if (currentPos !== 0 && sellOrders.length > 0) {
+        logger.info(`[OrderExecutor] Processing ${sellOrders.length} SELL orders (TP) with position ${currentPos}`);
+        
+        for (const hlOrder of sellOrders) {
+          // Skip if already processed
+          if (await consistencyEngine.isOrderProcessed(hlOrder.oid)) {
+            continue;
+          }
+          
+          // For sell orders, calculate quantity based on current position
+          const sellQuantity = Math.abs(currentPos);
+          
+          if (sellQuantity > 0) {
+            // Create reduce-only sell order
+            const binanceOrder = await binanceClient.createLimitOrder(
+              'HYPE', 'A', hlOrder.limitPx, sellQuantity, true
+            );
+            
+            if (binanceOrder && binanceOrder.orderId) {
+              const symbol = binanceClient.getBinanceSymbol('HYPE');
+              await orderMapper.saveMapping(userAddress, hlOrder.oid, binanceOrder.orderId, symbol);
+              await consistencyEngine.markOrderProcessed(hlOrder.oid, {
+                type: 'limit',
+                coin: 'HYPE',
+                side: hlOrder.side,
+                masterSize: parseFloat(hlOrder.sz),
+                totalMasterSize: parseFloat(hlOrder.sz),
+                followerSize: sellQuantity,
+                price: hlOrder.limitPx,
+                binanceOrderId: binanceOrder.orderId
+              });
+              logger.info(`[OrderExecutor] Synced SELL TP order ${hlOrder.oid} with quantity ${sellQuantity}`);
+            }
+          }
+        }
+      } else if (sellOrders.length > 0 && currentPos === 0) {
+        logger.info(`[OrderExecutor] SELL orders exist but no position, will sync after position opens`);
+      }
+      
+      // 4. Process BUY orders (add position orders)
+      for (const hlOrder of buyOrders) {
         // Skip if already processed
         if (await consistencyEngine.isOrderProcessed(hlOrder.oid)) {
           continue;
@@ -170,49 +288,19 @@ class OrderExecutor {
           userAddress: userAddress
         };
         
-        // For sell orders (reduce-only), calculate quantity based on current position
-        if (standardizedOrder.side === 'A') {
-          // For sell orders, we use the current position to calculate quantity
-          // This ensures we don't sell more than we have
-          const sellQuantity = Math.abs(currentPos);
-          
-          if (sellQuantity > 0) {
-            // Create reduce-only sell order
-            const binanceOrder = await binanceClient.createLimitOrder(
-              hlOrder.coin, 'A', hlOrder.limitPx, sellQuantity, true
-            );
-            
-            if (binanceOrder && binanceOrder.orderId) {
-              const symbol = binanceClient.getBinanceSymbol(hlOrder.coin);
-              await orderMapper.saveMapping(userAddress, hlOrder.oid, binanceOrder.orderId, symbol);
-              await consistencyEngine.markOrderProcessed(hlOrder.oid, {
-                type: 'limit',
-                coin: hlOrder.coin,
-                side: hlOrder.side,
-                masterSize: parseFloat(hlOrder.sz),
-                totalMasterSize: parseFloat(hlOrder.sz),
-                followerSize: sellQuantity,
-                price: hlOrder.limitPx,
-                binanceOrderId: binanceOrder.orderId
-              });
-              logger.info(`[OrderExecutor] Synced sell order ${hlOrder.oid} with quantity ${sellQuantity}`);
-            }
-          }
-        } else {
-          // For buy orders, use normal calculation
-          const result = await this.executeLimitOrder(standardizedOrder);
-          
-          // After buy order is executed, we need to sync and update take-profit order
-          // This ensures the TP order matches the new position after averaging down
-          await this.syncAndUpdateTakeProfit(userAddress, 'HYPE');
-        }
+        // For buy orders, use normal calculation
+        const result = await this.executeLimitOrder(standardizedOrder);
+        
+        // After buy order is executed, we need to sync and update take-profit order
+        // This ensures the TP order matches the new position after averaging down
+        await this.syncAndUpdateTakeProfit(userAddress, 'HYPE');
       }
       
-      // 4. Clean up zombie orders (orders on Binance that don't exist on Hyperliquid)
+      // 5. Clean up zombie orders (orders on Binance that don't exist on Hyperliquid)
       await this.cleanupZombieOrders(userAddress, 'HYPE');
       
       logger.info(`[OrderExecutor] Sync completed for user ${userAddress}`);
-      
+
     } catch (error) {
       logger.error(`[OrderExecutor] Failed to sync user orders`, error);
     }
