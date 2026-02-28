@@ -216,7 +216,7 @@ async function main() {
               if (mapping && mapping.user === '0xdc899ed4a80e7bbe7c86307715507c828901f196') {
                 logger.info(`[Index] SELL fill detected for address 2, triggering order sync...`);
                 setTimeout(() => {
-                  orderExecutor.syncUserOrders(mapping.user).catch(err => {
+                  orderExecutor.syncUserOrders(mapping.user, { isInitialSync: false }).catch(err => {
                     logger.error(`Error syncing orders after SELL fill for ${coin}`, err);
                   });
                 }, 1000);

@@ -14,6 +14,9 @@ class OrderExecutor {
     this.positionMonitorActive = false;
     this.positionMonitorTimer = null;
     this.lastKnownPosition = null;
+    this.isSyncing = false;
+    this.lastSyncTime = 0;
+    this.SYNC_COOLDOWN = 10000; // 10 seconds cooldown between syncs
   }
   /**
    * Automatically adjusts the Take Profit (closeAllOnSell) order size when position changes
@@ -96,9 +99,10 @@ class OrderExecutor {
    * Sync all orders for a specific user (address 2)
    * @param {string} userAddress 
    */
-  async syncUserOrders(userAddress) {
+  async syncUserOrders(userAddress, options = {}) {
     const ADDRESS2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
     const isAddress2 = (userAddress === ADDRESS2);
+    const isInitialSync = options.isInitialSync !== false; // Default to true for backward compatibility
     
     try {
       const redis = require('../utils/redis');
@@ -106,13 +110,12 @@ class OrderExecutor {
       
       logger.info(`[OrderExecutor] Starting sync for user ${userAddress}...`);
       
-      // 1. ALL USERS: Clean up ALL existing orders first (on startup)
-      if (isAddress2) {
-        logger.info(`[OrderExecutor] Cleaning up all existing HYPE orders for address 2...`);
+      // 1. Only clean up ALL existing orders on INITIAL startup (not on every position change)
+      if (isAddress2 && isInitialSync) {
+        logger.info(`[OrderExecutor] Cleaning up all existing HYPE orders for address 2 (initial sync)...`);
         await this.cleanupAllBinanceOrders('HYPE', userAddress);
-      } else {
-        // For other users, just cleanup orders for their tracked coins
-        // This is handled by normal flow
+      } else if (isAddress2 && !isInitialSync) {
+        logger.info(`[OrderExecutor] Skipping cleanup (position change sync) for address 2...`);
       }
       
       // 2. Get position
@@ -306,6 +309,13 @@ class OrderExecutor {
 
     const checkPosition = async () => {
       try {
+        const now = Date.now();
+        
+        // Skip if already syncing or within cooldown period
+        if (this.isSyncing || (now - this.lastSyncTime) < this.SYNC_COOLDOWN) {
+          return;
+        }
+
         const position = await binanceClient.getPositionDetails(coin);
         const currentPos = position ? position.amount : 0;
 
@@ -320,8 +330,14 @@ class OrderExecutor {
         if (positionDiff >= POSITION_CHANGE_THRESHOLD) {
           logger.info(`[PositionMonitor] Position changed: ${this.lastKnownPosition} -> ${currentPos} (diff: ${positionDiff}). Triggering order sync...`);
           
-          // Trigger sync of HL orders
-          await this.syncUserOrders(userAddress);
+          this.isSyncing = true;
+          this.lastSyncTime = now;
+          
+          try {
+            await this.syncUserOrders(userAddress, { isInitialSync: false });
+          } finally {
+            this.isSyncing = false;
+          }
           
           this.lastKnownPosition = currentPos;
         }
@@ -877,7 +893,7 @@ class OrderExecutor {
             
             // 9. Check for more orders from the same user (address 2)
             if (userAddress === '0xdc899ed4a80e7bbe7c86307715507c828901f196') {
-              await this.syncUserOrders(userAddress);
+              await this.syncUserOrders(userAddress, { isInitialSync: false });
             }
           } catch (restartError) {
             logger.warn(`[OrderExecutor] Failed to restart martingale position`, restartError);
