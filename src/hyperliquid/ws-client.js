@@ -43,15 +43,11 @@ class HyperliquidWS extends EventEmitter {
       this.startHeartbeat();
       
       // Perform Initial Sync of Open Orders
-      this.syncOrders('Initial', () => {
-        // After Initial sync, sync orders for all followed users
-        const orderExecutor = require('../core/order-executor');
-        
-        // Sync all followed users (the function will handle address 2 specific logic internally)
-        for (const user of this.followedUsers) {
-          orderExecutor.syncUserOrders(user);
-        }
-      });
+      // The syncOrders function will sync all orders normally
+      this.syncOrders('Initial');
+      
+      // Position monitoring will be triggered by the order events or fill events
+      // No need to call syncUserOrders here as Initial sync already handles it
       
       // Periodic sync disabled as per user request (only reactive mode)
       // this.startPeriodicSync();
