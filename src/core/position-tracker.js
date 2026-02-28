@@ -98,6 +98,17 @@ class PositionTracker {
     
     logger.info(`Consumed pending delta for ${coin}: consumed ${signedAmountConsumed}, remaining: ${newDelta}`);
   }
+
+  /**
+   * Get pending delta for a coin
+   * @param {string} coin 
+   * @returns {Promise<number>} Pending delta amount
+   */
+  async getPendingDelta(coin) {
+    const key = `pendingDelta:${coin}`;
+    const deltaStr = await redis.get(key);
+    return parseFloat(deltaStr) || 0;
+  }
 }
 
 module.exports = new PositionTracker();
