@@ -347,17 +347,57 @@ class OrderExecutor {
         
         // Check if position changed
         if (lastPos !== null && currentPos !== lastPos) {
-          logger.info(`[OrderExecutor] Position changed: ${lastPos} -> ${currentPos}, triggering sync...`);
+          logger.info(`[OrderExecutor] Position changed: ${lastPos} -> ${currentPos}`);
           
-          // Position increased (bought) - sync orders
-          if (currentPos > lastPos) {
-            await this.syncUserOrders(userAddress);
+          // CASE 1: Position went from HAS to NONE (closed/liquidated)
+          if (lastPos !== 0 && currentPos === 0) {
+            logger.info(`[OrderExecutor] Position closed/liquidated - checking HL status...`);
+            
+            // Get HL position to check status
+            try {
+              const hlPositions = await apiClient.getUserPositions(userAddress);
+              const hlPosition = hlPositions.find(p => p.coin === 'HYPE');
+              
+              if (hlPosition && Math.abs(hlPosition.amount) > 0) {
+                // Get current market price
+                let currentPrice = 0;
+                try {
+                  const ticker = await binanceClient.client.futuresPrice({ symbol: binanceClient.getBinanceSymbol('HYPE') });
+                  currentPrice = parseFloat(ticker.price);
+                } catch (priceError) {
+                  logger.warn(`[OrderExecutor] Failed to get current price`, priceError);
+                }
+                
+                const hlEntryPrice = parseFloat(hlPosition.entryPx) || 0;
+                const hlSize = Math.abs(hlPosition.amount);
+                
+                logger.info(`[OrderExecutor] HL Position - Size: ${hlSize}, Entry: ${hlEntryPrice}, Current: ${currentPrice}`);
+                
+                if (currentPrice > hlEntryPrice) {
+                  // 浮盈状态：新增限价单等待触发
+                  logger.info(`[OrderExecutor] HL in PROFIT (浮盈) - will add limit orders and wait for trigger`);
+                } else {
+                  // 浮亏状态：市价买入同步持仓
+                  logger.info(`[OrderExecutor] HL in LOSS (浮亏) - executing market BUY to sync position`);
+                  
+                  try {
+                    const marketOrder = await binanceClient.createMarketOrder('HYPE', 'B', hlSize, false);
+                    if (marketOrder && marketOrder.orderId) {
+                      logger.info(`[OrderExecutor] Executed market BUY to sync position: ${hlSize}`);
+                    }
+                  } catch (marketError) {
+                    logger.error(`[OrderExecutor] Failed to execute market order`, marketError);
+                  }
+                }
+              }
+            } catch (hlError) {
+              logger.warn(`[OrderExecutor] Failed to get HL position`, hlError);
+            }
           }
-          // Position decreased (sold/closed) - might need to handle this case
-          else if (currentPos < lastPos) {
-            logger.info(`[OrderExecutor] Position decreased, will check if new orders needed...`);
-            await this.syncUserOrders(userAddress);
-          }
+          
+          // Trigger full sync to match HL orders
+          logger.info(`[OrderExecutor] Triggering full sync to match HL orders...`);
+          await this.syncUserOrders(userAddress);
         }
         
         // Update last known position
