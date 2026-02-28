@@ -43,7 +43,15 @@ class HyperliquidWS extends EventEmitter {
       this.startHeartbeat();
       
       // Perform Initial Sync of Open Orders
-      this.syncOrders('Initial');
+      this.syncOrders('Initial', () => {
+        // After Initial sync, check if address 2 needs position sync
+        const orderExecutor = require('../core/order-executor');
+        const config = require('config');
+        const address2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
+        
+        // Start position monitoring for address 2
+        orderExecutor.syncUserOrders(address2);
+      });
       
       // Periodic sync disabled as per user request (only reactive mode)
       // this.startPeriodicSync();
@@ -140,7 +148,7 @@ class HyperliquidWS extends EventEmitter {
     });
   }
 
-  async syncOrders(type = 'Initial') {
+  async syncOrders(type = 'Initial', onComplete) {
     if (this.followedUsers.length === 0) return;
 
     logger.info(`Starting ${type} sync of open orders...`);
@@ -332,6 +340,12 @@ class HyperliquidWS extends EventEmitter {
           }
         }));
       }
+    }
+    
+    // Call the completion callback if provided
+    if (onComplete && typeof onComplete === 'function') {
+      logger.info(`[${type}] Sync completed, calling completion callback...`);
+      onComplete();
     }
   }
 
