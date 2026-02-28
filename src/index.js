@@ -177,17 +177,41 @@ async function main() {
 
         if (status === 'FILLED' || status === 'PARTIALLY_FILLED') {
            // We have a fill on Binance.
-           // Check if it corresponds to a mapped Hype order.
-            const binanceOrderId = order.orderId || order.i;
-            const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
+           const binanceOrderId = order.orderId || order.i;
+           const coin = order.symbol.replace('USDT', '');
+           const side = order.side || order.S;
+           
+           // 1. Check for specific Martingale Take Profit Adjustment
+           // If we just successfully BOUGHT (added to position), we need to update our total TP sell order
+           if (side === 'BUY') {
+             // For safety, we check if this user has the strategy enabled
+             // Since this is a global Binance event, we find the mapping to know which user triggered this
+             const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
+             if (mapping) {
+               const userStrategies = config.get('trading.userStrategies') || {};
+               const userStrategy = userStrategies[mapping.user] && userStrategies[mapping.user][coin] ? userStrategies[mapping.user][coin].strategy : null;
+               
+               if (userStrategy === 'closeAllOnSell') {
+                 // Trigger the TP adjustment routine asynchronously so we don't block the event loop
+                 setTimeout(() => {
+                   orderExecutor.adjustTakeProfitOrder(coin, mapping.user).catch(err => {
+                     logger.error(`Error auto-adjusting TP order for ${coin}`, err);
+                   });
+                 }, 500); // Slight delay to ensure position data is updated in Binance backend
+               }
+             }
+           }
+
+           // 2. Original Orphan Fill Detection
+           const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
             
             if (mapping) {
               // It is a mapped order.
               // Record it as Orphan (initially) - assuming Hype hasn't filled yet.
               
               await consistencyEngine.recordOrphanFill(mapping.oid, {
-                coin: order.symbol.replace('USDT', ''), // Remove USDT suffix
-                side: (order.side || order.S) === 'BUY' ? 'B' : 'A',
+                coin: coin, // Remove USDT suffix
+                side: side === 'BUY' ? 'B' : 'A',
                 sz: order.lastTradeQuantity || order.l,
                 price: order.lastTradePrice || order.L,
                 binanceOrderId: binanceOrderId,

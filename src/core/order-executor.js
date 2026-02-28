@@ -11,6 +11,83 @@ const dataCollector = require('../monitoring/data-collector'); // Import DataCol
 class OrderExecutor {
   
   /**
+   * Automatically adjusts the Take Profit (closeAllOnSell) order size when position changes
+   * This should be called after any successful buy order fill on Binance
+   * @param {string} coin 
+   * @param {string} userAddress
+   */
+  async adjustTakeProfitOrder(coin, userAddress) {
+    try {
+      const redis = require('../utils/redis');
+      const tpOrderId = await redis.get(`exposure:tp:${coin}`);
+      
+      if (!tpOrderId) {
+        logger.debug(`[OrderExecutor] No tracked TP order found for ${coin} to adjust.`);
+        return;
+      }
+
+      logger.info(`[OrderExecutor] Auto-adjusting TP order ${tpOrderId} for ${coin} due to position change...`);
+
+      // 1. Get original HL order mapping to find the original target price
+      const mapping = await orderMapper.getHyperliquidOrder(tpOrderId);
+      if (!mapping) {
+        logger.warn(`[OrderExecutor] Cannot adjust TP order ${tpOrderId}: Mapping lost.`);
+        // We might want to remove tracking if mapping is permanently gone, but leave it for now
+        return;
+      }
+
+      // 2. Get current Binance position
+      const currentPos = await binanceClient.getPosition(coin);
+      const absPos = Math.abs(currentPos);
+      
+      if (absPos === 0) {
+         logger.info(`[OrderExecutor] Position for ${coin} is 0. TP order adjustment skipped (should be canceled/filled separately).`);
+         return;
+      }
+
+      // 3. Get the Binance order to find its current price
+      const symbol = binanceClient.getBinanceSymbol(coin);
+      const binanceOrder = await binanceClient.client.futuresGetOrder({
+        symbol: symbol,
+        orderId: tpOrderId.toString()
+      });
+      
+      const currentPrice = binanceOrder.price;
+      const currentSide = binanceOrder.side;
+
+      // 4. Update the order atomically
+      logger.info(`[OrderExecutor] Adjusting ${coin} TP Order ${tpOrderId} to new size ${absPos}`);
+      const newBinanceOrder = await binanceClient.cancelReplaceOrder(
+        coin,
+        tpOrderId,
+        currentSide === 'BUY' ? 'B' : 'A', // convert back to standard side format for client
+        currentPrice, // keep same price
+        absPos,       // NEW QUANTITY: full current position
+        true          // ALWAYS reduceOnly for TP
+      );
+
+      if (newBinanceOrder && newBinanceOrder.orderId) {
+        // Update mappings
+        await orderMapper.deleteMapping(userAddress, mapping.oid);
+        await orderMapper.saveMapping(userAddress, mapping.oid, newBinanceOrder.orderId, symbol);
+        
+        // Update Tracking
+        await redis.set(`exposure:tp:${coin}`, newBinanceOrder.orderId);
+        logger.info(`[OrderExecutor] TP Order successfully auto-adjusted: ${tpOrderId} -> ${newBinanceOrder.orderId}`);
+      }
+    } catch (error) {
+      // If error is unknown order, maybe it just filled. Clean up tracking.
+      if (error.code === -2011) {
+        logger.info(`[OrderExecutor] TP Order ${coin} no longer active. Removing tracking.`);
+        const redis = require('../utils/redis');
+        await redis.del(`exposure:tp:${coin}`);
+      } else {
+        logger.error(`[OrderExecutor] Failed to auto-adjust TP order for ${coin}`, error);
+      }
+    }
+  }
+
+  /**
    * Calculate enforced minimum quantity if pending delta exists
    * @param {string} coin 
    * @param {number|null} calculatedQuantity 
@@ -197,6 +274,13 @@ class OrderExecutor {
       if (binanceOrder && binanceOrder.orderId) {
         const symbol = binanceClient.getBinanceSymbol(coin);
         await orderMapper.saveMapping(userAddress, oid, binanceOrder.orderId, symbol);
+        
+        // Track the Take Profit order for closeAllOnSell strategy
+        if (userStrategy === 'closeAllOnSell' && side === 'A') {
+          const redis = require('../utils/redis');
+          await redis.set(`exposure:tp:${coin}`, binanceOrder.orderId);
+          logger.info(`[OrderExecutor] Tracked Take Profit order ${binanceOrder.orderId} for ${coin}`);
+        }
       
         // Record Trade Stats
         dataCollector.recordTrade({
@@ -400,16 +484,36 @@ class OrderExecutor {
 
       logger.info(`[OrderExecutor] Updating order ${oid} (Binance ID: ${mapping.orderId})...`);
 
-      // 1. Calculate New Quantity
-      const masterOrderSize = parseFloat(sz);
-      const signedMasterOrderSize = side === 'B' ? masterOrderSize : -masterOrderSize;
+      // Check for user-specific strategies
+      const userStrategies = config.get('trading.userStrategies') || {};
+      const userStrategy = userStrategies[userAddress] && userStrategies[userAddress][coin] ? userStrategies[userAddress][coin].strategy : null;
+
+      let quantity;
       
-      let quantity = await positionCalculator.calculateQuantity(
-        coin,
-        Math.abs(signedMasterOrderSize), 
-        userAddress,
-        'open' 
-      );
+      if (userStrategy === 'closeAllOnSell' && side === 'A') {
+         // Re-evaluate entire position for update
+         const currentPos = await binanceClient.getPosition(coin);
+         const absPos = Math.abs(currentPos);
+         if (absPos > 0) {
+           quantity = absPos;
+           orderData.reduceOnly = true;
+           logger.info(`[OrderExecutor] Updating 'closeAllOnSell' TP order for ${coin}. New size: ${quantity}`);
+         } else {
+           logger.info(`[OrderExecutor] Update 'closeAllOnSell' skipped for ${coin}: No position to close.`);
+           quantity = 0;
+         }
+      } else {
+        // 1. Calculate New Quantity
+        const masterOrderSize = parseFloat(sz);
+        const signedMasterOrderSize = side === 'B' ? masterOrderSize : -masterOrderSize;
+        
+        quantity = await positionCalculator.calculateQuantity(
+          coin,
+          Math.abs(signedMasterOrderSize), 
+          userAddress,
+          'open' 
+        );
+      }
       
       if (!quantity || quantity <= 0) {
         logger.warn(`[OrderExecutor] Update calculated 0 quantity for ${oid}, aborting update.`);
@@ -435,6 +539,13 @@ class OrderExecutor {
           await orderMapper.saveMapping(userAddress, oid, newBinanceOrder.orderId, mapping.symbol);
           
           logger.info(`[OrderExecutor] Order updated (Atomic): HL ${oid} -> Binance ${newBinanceOrder.orderId}`);
+          
+          // Track the Take Profit order for closeAllOnSell strategy
+          if (userStrategy === 'closeAllOnSell' && side === 'A') {
+            const redis = require('../utils/redis');
+            await redis.set(`exposure:tp:${coin}`, newBinanceOrder.orderId);
+            logger.info(`[OrderExecutor] Updated Take Profit tracking to order ${newBinanceOrder.orderId} for ${coin}`);
+          }
           
           // Log update in history
           await consistencyEngine.markOrderProcessed(oid, {
