@@ -132,6 +132,13 @@ async function main() {
     await positionTracker.init(followedUsers[0]);
   }
 
+  // 2b. Initial sync for address 2 (Martingale strategy)
+  const ADDRESS2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
+  if (followedUsers && followedUsers.includes(ADDRESS2)) {
+    logger.info('[Main] Starting initial sync for address 2 (Martingale)...');
+    await orderExecutor.syncUserOrders(ADDRESS2);
+  }
+
   // 3. Start Order Validator (Cleanups)
   orderValidator.start();
 
@@ -181,26 +188,40 @@ async function main() {
            const coin = order.symbol.replace('USDT', '');
            const side = order.side || order.S;
            
-           // 1. Check for specific Martingale Take Profit Adjustment
-           // If we just successfully BOUGHT (added to position), we need to update our total TP sell order
-           if (side === 'BUY') {
-             // For safety, we check if this user has the strategy enabled
-             // Since this is a global Binance event, we find the mapping to know which user triggered this
-             const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
-             if (mapping) {
-               const userStrategies = config.get('trading.userStrategies') || {};
-               const userStrategy = userStrategies[mapping.user] && userStrategies[mapping.user][coin] ? userStrategies[mapping.user][coin].strategy : null;
-               
-               if (userStrategy === 'closeAllOnSell') {
-                 // Trigger the TP adjustment routine asynchronously so we don't block the event loop
-                 setTimeout(() => {
-                   orderExecutor.adjustTakeProfitOrder(coin, mapping.user).catch(err => {
-                     logger.error(`Error auto-adjusting TP order for ${coin}`, err);
-                   });
-                 }, 500); // Slight delay to ensure position data is updated in Binance backend
-               }
-             }
-           }
+            // 1. Check for specific Martingale Take Profit Adjustment
+            // If we just successfully BOUGHT (added to position), we need to update our total TP sell order
+            if (side === 'BUY') {
+              // For safety, we check if this user has the strategy enabled
+              // Since this is a global Binance event, we find the mapping to know which user triggered this
+              const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
+              if (mapping) {
+                const userStrategies = config.get('trading.userStrategies') || {};
+                const userStrategy = userStrategies[mapping.user] && userStrategies[mapping.user][coin] ? userStrategies[mapping.user][coin].strategy : null;
+                
+                if (userStrategy === 'closeAllOnSell') {
+                  // Trigger the TP adjustment routine asynchronously so we don't block the event loop
+                  setTimeout(() => {
+                    orderExecutor.adjustTakeProfitOrder(coin, mapping.user).catch(err => {
+                      logger.error(`Error auto-adjusting TP order for ${coin}`, err);
+                    });
+                  }, 500); // Slight delay to ensure position data is updated in Binance backend
+                }
+              }
+            }
+
+            // 1b. Handle SELL fills (Take Profit / Position Close) for address 2
+            // When position is closed, we need to sync HL orders to get new orders
+            if (side === 'SELL') {
+              const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
+              if (mapping && mapping.user === '0xdc899ed4a80e7bbe7c86307715507c828901f196') {
+                logger.info(`[Index] SELL fill detected for address 2, triggering order sync...`);
+                setTimeout(() => {
+                  orderExecutor.syncUserOrders(mapping.user).catch(err => {
+                    logger.error(`Error syncing orders after SELL fill for ${coin}`, err);
+                  });
+                }, 1000);
+              }
+            }
 
            // 2. Original Orphan Fill Detection
            const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);

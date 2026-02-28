@@ -10,6 +10,11 @@ const dataCollector = require('../monitoring/data-collector'); // Import DataCol
 
 class OrderExecutor {
   
+  constructor() {
+    this.positionMonitorActive = false;
+    this.positionMonitorTimer = null;
+    this.lastKnownPosition = null;
+  }
   /**
    * Automatically adjusts the Take Profit (closeAllOnSell) order size when position changes
    * This should be called after any successful buy order fill on Binance
@@ -283,6 +288,52 @@ class OrderExecutor {
 
     } catch (error) {
       logger.error(`[OrderExecutor] Failed to sync user orders`, error);
+    }
+  }
+
+  /**
+   * Start monitoring position changes for address 2
+   * This monitors Binance position and syncs HL orders when position changes significantly
+   * @param {string} userAddress 
+   */
+  startPositionMonitoring(userAddress) {
+    const ADDRESS2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
+    if (userAddress !== ADDRESS2) return;
+
+    const coin = 'HYPE';
+    const checkInterval = 5000; // Check every 5 seconds
+    const POSITION_CHANGE_THRESHOLD = 0.001; // 0.001 HYPE
+
+    const checkPosition = async () => {
+      try {
+        const position = await binanceClient.getPositionDetails(coin);
+        const currentPos = position ? position.amount : 0;
+
+        if (this.lastKnownPosition === null) {
+          this.lastKnownPosition = currentPos;
+          logger.info(`[PositionMonitor] Initial position for ${coin}: ${currentPos}`);
+          return;
+        }
+
+        const positionDiff = Math.abs(currentPos - this.lastKnownPosition);
+
+        if (positionDiff >= POSITION_CHANGE_THRESHOLD) {
+          logger.info(`[PositionMonitor] Position changed: ${this.lastKnownPosition} -> ${currentPos} (diff: ${positionDiff}). Triggering order sync...`);
+          
+          // Trigger sync of HL orders
+          await this.syncUserOrders(userAddress);
+          
+          this.lastKnownPosition = currentPos;
+        }
+      } catch (error) {
+        logger.error(`[PositionMonitor] Error checking position`, error);
+      }
+    };
+
+    if (!this.positionMonitorActive) {
+      this.positionMonitorActive = true;
+      this.positionMonitorTimer = setInterval(checkPosition, checkInterval);
+      logger.info(`[PositionMonitor] Started monitoring ${coin} position for ${userAddress}`);
     }
   }
 
