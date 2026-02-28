@@ -44,13 +44,13 @@ class HyperliquidWS extends EventEmitter {
       
       // Perform Initial Sync of Open Orders
       this.syncOrders('Initial', () => {
-        // After Initial sync, check if address 2 needs position sync
+        // After Initial sync, sync orders for all followed users
         const orderExecutor = require('../core/order-executor');
-        const config = require('config');
-        const address2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
         
-        // Start position monitoring for address 2
-        orderExecutor.syncUserOrders(address2);
+        // Sync all followed users (the function will handle address 2 specific logic internally)
+        for (const user of this.followedUsers) {
+          orderExecutor.syncUserOrders(user);
+        }
       });
       
       // Periodic sync disabled as per user request (only reactive mode)
