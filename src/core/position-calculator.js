@@ -133,6 +133,7 @@ class PositionCalculator {
       BTC: 3,
       ETH: 3,
       SOL: 1,
+      HYPE: 1,
       // Default fallback
       DEFAULT: 3
     };
