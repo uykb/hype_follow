@@ -305,7 +305,7 @@ class OrderExecutor {
 
     const coin = 'HYPE';
     const checkInterval = 5000; // Check every 5 seconds
-    const POSITION_CHANGE_THRESHOLD = 0.001; // 0.001 HYPE
+    const POSITION_CHANGE_THRESHOLD = 0.01; // 0.01 HYPE (increased from 0.001)
 
     const checkPosition = async () => {
       try {
@@ -317,7 +317,8 @@ class OrderExecutor {
         }
 
         const position = await binanceClient.getPositionDetails(coin);
-        const currentPos = position ? position.amount : 0;
+        // Round to 4 decimal places to avoid floating point precision issues
+        const currentPos = Math.round((position ? position.amount : 0) * 10000) / 10000;
 
         if (this.lastKnownPosition === null) {
           this.lastKnownPosition = currentPos;
@@ -327,6 +328,7 @@ class OrderExecutor {
 
         const positionDiff = Math.abs(currentPos - this.lastKnownPosition);
 
+        // Use a small epsilon for float comparison, but also require minimum threshold
         if (positionDiff >= POSITION_CHANGE_THRESHOLD) {
           logger.info(`[PositionMonitor] Position changed: ${this.lastKnownPosition} -> ${currentPos} (diff: ${positionDiff}). Triggering order sync...`);
           
@@ -339,6 +341,7 @@ class OrderExecutor {
             this.isSyncing = false;
           }
           
+          // Update last known position after sync
           this.lastKnownPosition = currentPos;
         }
       } catch (error) {
