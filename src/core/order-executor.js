@@ -117,6 +117,9 @@ class OrderExecutor {
       
       logger.info(`[OrderExecutor] Current Binance position for HYPE: ${currentPos}`);
       
+      // Initialize last position in Redis to prevent false trigger
+      await redis.set(`martingale:last_position:${userAddress}`, currentPos.toString(), 'EX', 86400);
+      
       // 2. Get all open orders from Hyperliquid
       let hlOrders = await apiClient.getUserOpenOrders(userAddress, 'HYPE');
       
@@ -300,10 +303,84 @@ class OrderExecutor {
       await this.cleanupZombieOrders(userAddress, 'HYPE');
       
       logger.info(`[OrderExecutor] Sync completed for user ${userAddress}`);
+      
+      // 6. Start continuous monitoring for position changes
+      this.startPositionMonitoring(userAddress);
 
     } catch (error) {
       logger.error(`[OrderExecutor] Failed to sync user orders`, error);
     }
+  }
+
+  /**
+   * Continuously monitor Binance position and sync when position changes
+   * @param {string} userAddress 
+   */
+  startPositionMonitoring(userAddress) {
+    // Prevent multiple monitoring loops
+    if (this._positionMonitorRunning) {
+      logger.info(`[OrderExecutor] Position monitoring already running`);
+      return;
+    }
+    
+    this._positionMonitorRunning = true;
+    const MONITOR_INTERVAL = 5000; // 5 seconds
+    const apiClient = require('../hyperliquid/api-client');
+    
+    logger.info(`[OrderExecutor] Starting continuous position monitoring...`);
+    
+    const monitorLoop = async () => {
+      if (!this._positionMonitorRunning) {
+        logger.info(`[OrderExecutor] Position monitoring stopped`);
+        return;
+      }
+      
+      try {
+        // Get current position
+        const position = await binanceClient.getPositionDetails('HYPE');
+        const currentPos = position ? position.amount : 0;
+        
+        // Get last known position from Redis
+        const redis = require('../utils/redis');
+        const lastPosStr = await redis.get(`martingale:last_position:${userAddress}`);
+        const lastPos = lastPosStr ? parseFloat(lastPosStr) : null;
+        
+        // Check if position changed
+        if (lastPos !== null && currentPos !== lastPos) {
+          logger.info(`[OrderExecutor] Position changed: ${lastPos} -> ${currentPos}, triggering sync...`);
+          
+          // Position increased (bought) - sync orders
+          if (currentPos > lastPos) {
+            await this.syncUserOrders(userAddress);
+          }
+          // Position decreased (sold/closed) - might need to handle this case
+          else if (currentPos < lastPos) {
+            logger.info(`[OrderExecutor] Position decreased, will check if new orders needed...`);
+            await this.syncUserOrders(userAddress);
+          }
+        }
+        
+        // Update last known position
+        await redis.set(`martingale:last_position:${userAddress}`, currentPos.toString(), 'EX', 86400);
+        
+      } catch (error) {
+        logger.warn(`[OrderExecutor] Error in position monitoring loop`, error);
+      }
+      
+      // Schedule next check
+      setTimeout(monitorLoop, MONITOR_INTERVAL);
+    };
+    
+    // Start the monitoring loop
+    monitorLoop();
+  }
+
+  /**
+   * Stop position monitoring
+   */
+  stopPositionMonitoring() {
+    this._positionMonitorRunning = false;
+    logger.info(`[OrderExecutor] Position monitoring stop requested`);
   }
 
   /**
