@@ -88,6 +88,415 @@ class OrderExecutor {
   }
 
   /**
+   * Sync all orders for a specific user (address 2)
+   * @param {string} userAddress 
+   */
+  async syncUserOrders(userAddress) {
+    try {
+      const redis = require('../utils/redis');
+      const apiClient = require('../hyperliquid/api-client');
+      
+      logger.info(`[OrderExecutor] Starting sync for user ${userAddress}...`);
+      
+      // 1. Get current Binance position for this user
+      let position = await binanceClient.getPositionDetails('HYPE');
+      let currentPos = position ? position.amount : 0;
+      
+      // 2. Get all open orders from Hyperliquid for this user
+      let hlOrders = await apiClient.getUserOpenOrders(userAddress, 'HYPE');
+      
+      // 2.1 Check if there are buy orders (new positions opening)
+      const hasBuyOrder = hlOrders && hlOrders.length > 0 && hlOrders.some(o => o.side === 'B');
+      
+      // 2.2 Get the last known HL orders from Redis to compare (for time difference detection)
+      const lastHlOrdersStr = await redis.get(`martingale:last_hl_orders:${userAddress}`);
+      const lastHlOrders = lastHlOrdersStr ? JSON.parse(lastHlOrdersStr) : [];
+      const lastBuyOrderIds = new Set(lastHlOrders.filter(o => o.side === 'B').map(o => o.oid));
+      
+      // 2.3 Check if this is a truly NEW buy order (not just a sync delay)
+      // A new buy order means the OID is not in the last known orders
+      const newBuyOrders = hasBuyOrder ? hlOrders.filter(o => o.side === 'B' && !lastBuyOrderIds.has(o.oid.toString())) : [];
+      const isNewPositionCycle = newBuyOrders.length > 0;
+      
+      if (!hlOrders || hlOrders.length === 0) {
+        logger.info(`[OrderExecutor] No open orders found for user ${userAddress}`);
+        // No orders in HL - clean up all existing Binance orders for this coin
+        await this.cleanupAllBinanceOrders('HYPE', userAddress);
+        
+        // 2.4 Enter polling loop - wait for new position to appear
+        logger.info(`[OrderExecutor] Entering polling loop to wait for new position...`);
+        const hasNewPosition = await this.waitForNewPosition(userAddress, 'HYPE');
+        
+        if (hasNewPosition) {
+          logger.info(`[OrderExecutor] New position detected, continuing sync...`);
+          // Get fresh data after position appears
+          position = await binanceClient.getPositionDetails('HYPE');
+          currentPos = position ? position.amount : 0;
+          hlOrders = await apiClient.getUserOpenOrders(userAddress, 'HYPE');
+        } else {
+          logger.info(`[OrderExecutor] No new position after timeout, exiting sync`);
+          return;
+        }
+      }
+      
+      // 2.5 If there are truly NEW buy orders (new position cycle), clean up old orders first
+      if (isNewPositionCycle) {
+        logger.info(`[OrderExecutor] Detected NEW buy order (new cycle) - cleaning up old orders first`);
+        await this.cleanupAllBinanceOrders('HYPE', userAddress);
+      }
+      
+      // 2.6 Update the last known HL orders in Redis
+      if (hlOrders && hlOrders.length > 0) {
+        await redis.set(`martingale:last_hl_orders:${userAddress}`, JSON.stringify(hlOrders), 'EX', 86400);
+      }
+      
+      // 3. Process each order
+      for (const hlOrder of hlOrders) {
+        // Skip if already processed
+        if (await consistencyEngine.isOrderProcessed(hlOrder.oid)) {
+          continue;
+        }
+        
+        // Standardize order
+        const standardizedOrder = {
+          type: 'order',
+          status: 'open',
+          coin: hlOrder.coin,
+          side: hlOrder.side,
+          limitPx: hlOrder.limitPx,
+          sz: hlOrder.sz,
+          oid: hlOrder.oid,
+          timestamp: hlOrder.timestamp,
+          userAddress: userAddress
+        };
+        
+        // For sell orders (reduce-only), calculate quantity based on current position
+        if (standardizedOrder.side === 'A') {
+          // For sell orders, we use the current position to calculate quantity
+          // This ensures we don't sell more than we have
+          const sellQuantity = Math.abs(currentPos);
+          
+          if (sellQuantity > 0) {
+            // Create reduce-only sell order
+            const binanceOrder = await binanceClient.createLimitOrder(
+              hlOrder.coin, 'A', hlOrder.limitPx, sellQuantity, true
+            );
+            
+            if (binanceOrder && binanceOrder.orderId) {
+              const symbol = binanceClient.getBinanceSymbol(hlOrder.coin);
+              await orderMapper.saveMapping(userAddress, hlOrder.oid, binanceOrder.orderId, symbol);
+              await consistencyEngine.markOrderProcessed(hlOrder.oid, {
+                type: 'limit',
+                coin: hlOrder.coin,
+                side: hlOrder.side,
+                masterSize: parseFloat(hlOrder.sz),
+                totalMasterSize: parseFloat(hlOrder.sz),
+                followerSize: sellQuantity,
+                price: hlOrder.limitPx,
+                binanceOrderId: binanceOrder.orderId
+              });
+              logger.info(`[OrderExecutor] Synced sell order ${hlOrder.oid} with quantity ${sellQuantity}`);
+            }
+          }
+        } else {
+          // For buy orders, use normal calculation
+          const result = await this.executeLimitOrder(standardizedOrder);
+          
+          // After buy order is executed, we need to sync and update take-profit order
+          // This ensures the TP order matches the new position after averaging down
+          await this.syncAndUpdateTakeProfit(userAddress, 'HYPE');
+        }
+      }
+      
+      // 4. Clean up zombie orders (orders on Binance that don't exist on Hyperliquid)
+      await this.cleanupZombieOrders(userAddress, 'HYPE');
+      
+      logger.info(`[OrderExecutor] Sync completed for user ${userAddress}`);
+      
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to sync user orders`, error);
+    }
+  }
+
+  /**
+   * Sync and update take-profit order for a specific user and coin
+   * This is called after a buy order (add position) to adjust TP accordingly
+   * @param {string} userAddress 
+   * @param {string} coin 
+   */
+  async syncAndUpdateTakeProfit(userAddress, coin) {
+    try {
+      const redis = require('../utils/redis');
+      const apiClient = require('../hyperliquid/api-client');
+      
+      logger.info(`[OrderExecutor] Syncing take-profit orders for ${userAddress} on ${coin}...`);
+      
+      // 1. Get current Binance position
+      const position = await binanceClient.getPositionDetails(coin);
+      const currentPos = position ? position.amount : 0;
+      
+      if (currentPos <= 0) {
+        logger.info(`[OrderExecutor] No position for ${coin}, skipping TP sync`);
+        return;
+      }
+      
+      // 2. Get all open orders from Hyperliquid for this user and coin
+      const hlOrders = await apiClient.getUserOpenOrders(userAddress, coin);
+      
+      // 2.1 Get the last known TP info from Redis to check if TP changed
+      const lastTpInfoStr = await redis.get(`martingale:last_tp:${userAddress}:${coin}`);
+      const lastTpInfo = lastTpInfoStr ? JSON.parse(lastTpInfoStr) : null;
+      
+      // 3. Find the take-profit order (sell order with highest price)
+      let tpOrder = null;
+      let maxTpPrice = 0;
+      
+      for (const order of hlOrders) {
+        if (order.side === 'A' && order.limitPx > maxTpPrice) {
+          maxTpPrice = order.limitPx;
+          tpOrder = order;
+        }
+      }
+      
+      // 3.1 Check if TP order has changed (price or existence)
+      // This avoids sync issues due to time difference between platforms
+      const hasTpChanged = !lastTpInfo || 
+        (tpOrder && (!lastTpInfo.oid || tpOrder.oid.toString() !== lastTpInfo.oid.toString())) ||
+        (!tpOrder && lastTpInfo.oid) ||
+        (tpOrder && lastTpInfo.oid && tpOrder.limitPx !== lastTpInfo.price);
+      
+      if (!hasTpChanged && lastTpInfo && lastTpInfo.orderId) {
+        // TP hasn't changed, check if we still have a valid TP order on Binance
+        try {
+          const binanceOrder = await binanceClient.client.futuresGetOrder({
+            symbol: binanceClient.getBinanceSymbol(coin),
+            orderId: lastTpInfo.orderId.toString()
+          });
+          
+          if (binanceOrder && binanceOrder.status === 'NEW') {
+            logger.info(`[OrderExecutor] TP order ${lastTpInfo.orderId} unchanged and active, skipping update`);
+            return;
+          }
+        } catch (err) {
+          // Order not found or not active, need to recreate
+          logger.debug(`[OrderExecutor] Existing TP order not active, will recreate`);
+        }
+      }
+      
+      // 4. Get existing TP order ID from Redis
+      const existingTpOrderId = await redis.get(`exposure:tp:${coin}`);
+      
+      if (!tpOrder) {
+        // No TP order in HL, cancel existing TP if any
+        if (existingTpOrderId) {
+          try {
+            await binanceClient.cancelOrder(binanceClient.getBinanceSymbol(coin), existingTpOrderId);
+            await redis.del(`exposure:tp:${coin}`);
+            logger.info(`[OrderExecutor] Cancelled TP order ${existingTpOrderId} (no TP in HL)`);
+          } catch (err) {
+            logger.warn(`[OrderExecutor] Failed to cancel TP order`, err);
+          }
+        }
+        
+        // Update last TP info
+        await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({ oid: null, price: null, orderId: null }), 'EX', 86400);
+        return;
+      }
+      
+      // 5. Calculate new TP quantity based on current position
+      const tpQuantity = Math.abs(currentPos);
+      
+      // 6. If there's an existing TP order, cancel and replace
+      if (existingTpOrderId) {
+        try {
+          // Try to cancel existing TP order
+          await binanceClient.cancelOrder(binanceClient.getBinanceSymbol(coin), existingTpOrderId);
+          logger.info(`[OrderExecutor] Cancelled existing TP order ${existingTpOrderId}`);
+        } catch (err) {
+          // Order might already be filled or cancelled, that's ok
+          logger.debug(`[OrderExecutor] Could not cancel existing TP order`, err.message);
+        }
+      }
+      
+      // 7. Create new TP order with updated quantity
+      const binanceOrder = await binanceClient.createLimitOrder(
+        coin, 'A', tpOrder.limitPx, tpQuantity, true // reduceOnly
+      );
+      
+      if (binanceOrder && binanceOrder.orderId) {
+        // Update TP tracking
+        await redis.set(`exposure:tp:${coin}`, binanceOrder.orderId.toString());
+        
+        // Update last TP info
+        await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+          oid: tpOrder.oid.toString(),
+          price: tpOrder.limitPx,
+          orderId: binanceOrder.orderId.toString()
+        }), 'EX', 86400);
+        
+        // Update mapping
+        const symbol = binanceClient.getBinanceSymbol(coin);
+        await orderMapper.saveMapping(userAddress, tpOrder.oid, binanceOrder.orderId, symbol);
+         
+        logger.info(`[OrderExecutor] Updated TP order: ${binanceOrder.orderId} for ${tpQuantity} ${coin} @ ${tpOrder.limitPx}`);
+      }
+      
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to sync/update take-profit`, error);
+    }
+  }
+
+  /**
+   * Clean up zombie orders for a specific user and coin
+   * @param {string} userAddress 
+   * @param {string} coin 
+   */
+  async cleanupZombieOrders(userAddress, coin) {
+    try {
+      const redis = require('../utils/redis');
+      const apiClient = require('../hyperliquid/api-client');
+      
+      // Get all Binance open orders for this user and coin
+      const binanceOrders = await binanceClient.client.futuresOpenOrders();
+      const userOrders = binanceOrders.filter(o => 
+        o.symbol === binanceClient.getBinanceSymbol(coin) &&
+        o.side === 'SELL' // Only check sell orders for zombie cleanup
+      );
+      
+      // Get all open orders from Hyperliquid for this user and coin
+      const hlOrders = await apiClient.getUserOpenOrders(userAddress, coin);
+      
+      // Create a set of HL order IDs
+      const hlOrderIds = new Set(hlOrders.map(o => o.oid.toString()));
+      
+      // Cancel orders that exist on Binance but not on Hyperliquid
+      for (const binanceOrder of userOrders) {
+        // Check if this order has a mapping
+        const mapping = await orderMapper.getHyperliquidOrder(binanceOrder.orderId);
+        
+        if (mapping) {
+          // If it has a mapping but the HL order doesn't exist anymore, cancel it
+          if (!hlOrderIds.has(mapping.oid.toString())) {
+            logger.info(`[OrderExecutor] Cancelling zombie order ${binanceOrder.orderId} (no corresponding HL order)`);
+            try {
+              await binanceClient.cancelOrder(binanceOrder.symbol, binanceOrder.orderId);
+              await orderMapper.deleteMapping(userAddress, mapping.oid);
+            } catch (cancelError) {
+              logger.warn(`[OrderExecutor] Failed to cancel zombie order ${binanceOrder.orderId}`, cancelError);
+            }
+          }
+        }
+      }
+      
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to cleanup zombie orders`, error);
+    }
+  }
+
+  /**
+   * Clean up all Binance orders for a specific coin (when new position cycle starts)
+   * This is called when we detect a new buy order, meaning a new martingale cycle
+   * @param {string} coin 
+   * @param {string} userAddress 
+   */
+  async cleanupAllBinanceOrders(coin, userAddress) {
+    try {
+      const redis = require('../utils/redis');
+      
+      logger.info(`[OrderExecutor] Cleaning up all Binance orders for ${coin}...`);
+      
+      // Get all open orders from Binance for this coin
+      const binanceOrders = await binanceClient.client.futuresOpenOrders();
+      const coinOrders = binanceOrders.filter(o => o.symbol === binanceClient.getBinanceSymbol(coin));
+      
+      if (coinOrders.length === 0) {
+        logger.info(`[OrderExecutor] No existing orders to clean up for ${coin}`);
+        return;
+      }
+      
+      // Cancel all orders for this coin
+      for (const order of coinOrders) {
+        try {
+          await binanceClient.cancelOrder(order.symbol, order.orderId);
+          logger.info(`[OrderExecutor] Cancelled order ${order.orderId} (${order.side} ${order.origQty} @ ${order.price})`);
+        } catch (cancelError) {
+          logger.warn(`[OrderExecutor] Failed to cancel order ${order.orderId}`, cancelError);
+        }
+      }
+      
+      // Clean up Redis mappings for this coin (all mappings with this coin symbol)
+      // Get all mapping keys
+      const keys = await redis.keys(`map:h2b:${userAddress}:*`);
+      for (const key of keys) {
+        const val = await redis.get(key);
+        if (val) {
+          const parsed = JSON.parse(val);
+          if (parsed.symbol === binanceClient.getBinanceSymbol(coin)) {
+            await redis.del(key);
+            logger.debug(`[OrderExecutor] Cleaned up mapping: ${key}`);
+          }
+        }
+      }
+      
+      // Clean up TP tracking
+      await redis.del(`exposure:tp:${coin}`);
+      logger.info(`[OrderExecutor] Cleaned up TP tracking for ${coin}`);
+      
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to cleanup all Binance orders`, error);
+    }
+  }
+
+  /**
+   * Wait for new position to appear (polling loop)
+   * This is called when no HL orders exist and we need to wait for a new position
+   * @param {string} userAddress 
+   * @param {string} coin 
+   * @returns {Promise<boolean>} True if new position detected, false if timeout
+   */
+  async waitForNewPosition(userAddress, coin) {
+    const MAX_WAIT_TIME = 60000; // 60 seconds max wait
+    const POLL_INTERVAL = 2000; // 2 seconds between polls
+    const apiClient = require('../hyperliquid/api-client');
+    
+    const startTime = Date.now();
+    let lastPosition = 0;
+    
+    while (Date.now() - startTime < MAX_WAIT_TIME) {
+      try {
+        // Check Binance position
+        const position = await binanceClient.getPositionDetails(coin);
+        const currentPos = position ? position.amount : 0;
+        
+        // Check if position changed (new position opened)
+        if (currentPos !== lastPosition && currentPos > 0) {
+          logger.info(`[OrderExecutor] New position detected: ${currentPos} ${coin}`);
+          return true;
+        }
+        
+        lastPosition = currentPos;
+        
+        // Also check if HL has new orders
+        const hlOrders = await apiClient.getUserOpenOrders(userAddress, coin);
+        if (hlOrders && hlOrders.length > 0) {
+          logger.info(`[OrderExecutor] New HL orders detected`);
+          return true;
+        }
+        
+        logger.debug(`[OrderExecutor] Waiting for new position... (${Math.round((MAX_WAIT_TIME - (Date.now() - startTime)) / 1000)}s remaining)`);
+        
+      } catch (error) {
+        logger.warn(`[OrderExecutor] Error in waitForNewPosition loop`, error);
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+    }
+    
+    logger.info(`[OrderExecutor] Timeout waiting for new position`);
+    return false;
+  }
+
+  /**
    * Calculate enforced minimum quantity if pending delta exists
    * @param {string} coin 
    * @param {number|null} calculatedQuantity 
@@ -302,16 +711,63 @@ class OrderExecutor {
           binanceOrderId: binanceOrder.orderId
         });
 
+
+
+
         // 7. Update Delta
         const deltaCleared = signedTotalSize - signedMasterOrderSize;
         await positionTracker.consumePendingDelta(coin, deltaCleared);
+        
+        // 7.1 For address 2 (martingale), after buy order execution, sync TP order
+        if (userAddress === '0xdc899ed4a80e7bbe7c86307715507c828901f196' && side === 'B') {
+          await this.syncAndUpdateTakeProfit(userAddress, coin);
+        }
+        
+        // 8. Check if we need to re-open position (Martingale strategy)
+        if (userStrategy === 'closeAllOnSell' && side === 'A') {
+          // After closing all positions, we should re-open with new limit order
+          // This simulates the martingale strategy of re-entering at lower price
+          try {
+            // Get current market price for re-entry
+            const ticker = await binanceClient.client.futuresPrice({ symbol: binanceClient.getBinanceSymbol(coin) });
+            const currentPrice = parseFloat(ticker.price);
+            
+            // Calculate new limit price (slightly below current market price for better fill chance)
+            const newLimitPrice = currentPrice * 0.99; // 1% below market
+            
+            // Calculate quantity based on new master order size (we assume HL will send new buy order)
+            // For now, we place a small initial order to restart the cycle
+            const restartQuantity = await positionCalculator.calculateQuantity(
+              coin,
+              0.001, // Small initial size to restart
+              userAddress,
+              'open'
+            );
+            
+            if (restartQuantity && restartQuantity > 0) {
+              const restartOrder = await binanceClient.createLimitOrder(
+                coin, 'B', newLimitPrice, restartQuantity, false
+              );
+              
+              if (restartOrder && restartOrder.orderId) {
+                const symbol = binanceClient.getBinanceSymbol(coin);
+                await orderMapper.saveMapping(userAddress, `martingale_restart_${Date.now()}`, restartOrder.orderId, symbol);
+                logger.info(`[OrderExecutor] Martingale strategy: Restarted position with ${restartQuantity} ${coin} at ${newLimitPrice}`);
+              }
+            }
+            
+            // 9. Check for more orders from the same user (address 2)
+            if (userAddress === '0xdc899ed4a80e7bbe7c86307715507c828901f196') {
+              await this.syncUserOrders(userAddress);
+            }
+          } catch (restartError) {
+            logger.warn(`[OrderExecutor] Failed to restart martingale position`, restartError);
+          }
+        }
       }
 
     } catch (error) {
-      logger.error(`Failed to execute limit order ${oid}`, error);
-    } finally {
-      // Always release the lock
-      await consistencyEngine.releaseOrderLock(userAddress, oid);
+      logger.error(`Failed to execute market order for ${coin}`, error);
     }
   }
 
