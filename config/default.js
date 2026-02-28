@@ -16,7 +16,8 @@ module.exports = {
     wsUrl: process.env.HYPERLIQUID_WS_URL || 'wss://api.hyperliquid.xyz/ws',
     // List of "Smart Money" UIDs to follow
     followedUsers: [
-      '0xdae4df7207feb3b350e4284c8efe5f7dac37f637'
+      '0xdae4df7207feb3b350e4284c8efe5f7dac37f637',
+      '0xdc899ed4a80e7bbe7c86307715507c828901f196'
     ]
   },
   redis: {
@@ -26,18 +27,20 @@ module.exports = {
   },
   riskControl: {
     // Whitelist of supported coins
-    supportedCoins: ['BTC', 'ETH', 'SOL'],
+    supportedCoins: ['BTC', 'ETH', 'SOL', 'HYPE'],
     // Max position size limits (not implemented in MVP but placeholder)
     maxPositionSize: {
       BTC: 0.1,
       ETH: 2.0,
-      SOL: 20.0
+      SOL: 20.0,
+      HYPE: 1000.0 // Add max position size for HYPE
     },
     // Threshold for aggressive risk reduction (reduce half)
     reductionThreshold: {
       BTC: 0.015,
       ETH: 0.2,
-      SOL: 5
+      SOL: 5,
+      HYPE: 100.0 // Add threshold for HYPE
     }
   },
   trading: {
@@ -60,7 +63,8 @@ module.exports = {
     minOrderSize: {
       BTC: 0.002,
       ETH: 0.007,
-      SOL: 0.04
+      SOL: 0.04,
+      HYPE: 1.0 // Minimum order size for HYPE
     }
   },
   monitoring: {
