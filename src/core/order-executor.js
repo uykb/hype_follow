@@ -238,10 +238,16 @@ class OrderExecutor {
         }
       }
       
-      // 6. Process BUY orders
+      // 6. Process BUY orders - for address 2, force resync all orders
       for (const hlOrder of buyOrders) {
-        if (await consistencyEngine.isOrderProcessed(hlOrder.oid)) {
-          continue;
+        // For address 2, always resync to ensure proper ratio calculation
+        if (isAddress2) {
+          // Skip if already processed but we want to force recalculate
+          // Actually, for address 2 we should force recalculate, so we'll skip the check
+        } else {
+          if (await consistencyEngine.isOrderProcessed(hlOrder.oid)) {
+            continue;
+          }
         }
         
         const standardizedOrder = {
