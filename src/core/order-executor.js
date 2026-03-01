@@ -301,12 +301,13 @@ class OrderExecutor {
         };
         
         await this.executeLimitOrder(standardizedOrder);
-        
-        if (isAddress2) {
-          // Add a small delay to allow position to update in Binance
-          await new Promise(resolve => setTimeout(resolve, 500));
-          await this.syncAndUpdateTakeProfit(userAddress, 'HYPE');
-        }
+      }
+      
+      // 6.1 Only sync TP once after ALL BUY orders are processed
+      if (isAddress2 && buyOrders.length > 0) {
+        // Add a small delay to allow position to update in Binance
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await this.syncAndUpdateTakeProfit(userAddress, 'HYPE');
       }
       
       // 7. Cleanup zombie orders
@@ -415,10 +416,12 @@ class OrderExecutor {
       
       // 3.1 Check if TP order has changed (price or existence)
       // This avoids sync issues due to time difference between platforms
+      // Also check if quantity has changed (position might have changed)
+      const lastQty = lastTpInfo ? lastTpInfo.quantity : 0;
       const hasTpChanged = !lastTpInfo || 
         (tpOrder && (!lastTpInfo.oid || tpOrder.oid.toString() !== lastTpInfo.oid.toString())) ||
         (!tpOrder && lastTpInfo.oid) ||
-        (tpOrder && lastTpInfo.oid && tpOrder.limitPx !== lastTpInfo.price);
+        (tpOrder && lastTpInfo.oid && (tpOrder.limitPx !== lastTpInfo.price || Math.abs(currentPos - lastQty) > 0.01));
       
       if (!hasTpChanged && lastTpInfo && lastTpInfo.orderId) {
         // TP hasn't changed, check if we still have a valid TP order on Binance
@@ -497,10 +500,11 @@ class OrderExecutor {
         // Update TP tracking
         await redis.set(`exposure:tp:${coin}`, binanceOrder.orderId.toString());
         
-        // Update last TP info
+        // Update last TP info (including quantity)
         await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
           oid: tpOrder.oid.toString(),
           price: tpOrder.limitPx,
+          quantity: currentPos, // Store the position quantity
           orderId: binanceOrder.orderId.toString()
         }), 'EX', 86400);
         
