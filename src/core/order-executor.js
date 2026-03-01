@@ -237,44 +237,8 @@ class OrderExecutor {
         }
       }
       
-      // 5. Process SELL orders (take-profit) - only if have ACTUAL position (refreshed)
-      // Re-check position after BUY orders might have been filled
-      const freshPosition = await binanceClient.getPositionDetails('HYPE');
-      const freshCurrentPos = freshPosition ? freshPosition.amount : 0;
-      
-      if (freshCurrentPos !== 0 && sellOrders.length > 0) {
-        logger.info(`[OrderExecutor] Processing ${sellOrders.length} SELL TP orders for ${userAddress} (position: ${freshCurrentPos})`);
-        
-        for (const hlOrder of sellOrders) {
-          if (await consistencyEngine.isOrderProcessed(hlOrder.oid)) {
-            continue;
-          }
-          
-          const sellQuantity = Math.abs(freshCurrentPos);
-          
-          if (sellQuantity > 0) {
-            const binanceOrder = await binanceClient.createLimitOrder(
-              'HYPE', 'A', hlOrder.limitPx, sellQuantity, true
-            );
-            
-            if (binanceOrder && binanceOrder.orderId) {
-              const symbol = binanceClient.getBinanceSymbol('HYPE');
-              await orderMapper.saveMapping(userAddress, hlOrder.oid, binanceOrder.orderId, symbol);
-              await consistencyEngine.markOrderProcessed(hlOrder.oid, {
-                type: 'limit',
-                coin: 'HYPE',
-                side: hlOrder.side,
-                masterSize: parseFloat(hlOrder.sz),
-                totalMasterSize: parseFloat(hlOrder.sz),
-                followerSize: sellQuantity,
-                price: hlOrder.limitPx,
-                binanceOrderId: binanceOrder.orderId
-              });
-              logger.info(`[OrderExecutor] Synced SELL TP order ${hlOrder.oid} qty ${sellQuantity}`);
-            }
-          }
-        }
-      }
+      // 5. Skip SELL TP order creation here - let syncAndUpdateTakeProfit handle it
+      // This ensures proper tracking and avoids duplicate TP creation
       
       // 6. Process BUY orders - for address 2, force resync all orders
       for (const hlOrder of buyOrders) {
@@ -303,8 +267,8 @@ class OrderExecutor {
         await this.executeLimitOrder(standardizedOrder);
       }
       
-      // 6.1 Only sync TP once after ALL BUY orders are processed
-      if (isAddress2 && buyOrders.length > 0) {
+      // 6.1 Sync TP after processing (either BUY orders or just TP update)
+      if (isAddress2 && (buyOrders.length > 0 || sellOrders.length > 0)) {
         // Add a small delay to allow position to update in Binance
         await new Promise(resolve => setTimeout(resolve, 1000));
         await this.syncAndUpdateTakeProfit(userAddress, 'HYPE');
