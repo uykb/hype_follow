@@ -167,15 +167,44 @@ class OrderExecutor {
             
             logger.info(`[OrderExecutor] Address 2 HL Position - Size: ${hlSize}, Entry: ${hlEntryPrice}, Current: ${currentPrice}`);
             
-            if (currentPrice > hlEntryPrice) {
-              logger.info(`[OrderExecutor] Address 2 in PROFIT (浮盈) - will add limit orders`);
+            // Calculate position size based on FIXED RATIO, NOT the exact HL position
+            // This prevents excessive position size that could lead to liquidation
+            const tradingMode = config.get('trading.mode');
+            const fixedRatio = config.get('trading.fixedRatio');
+            const equalRatio = config.get('trading.equalRatio');
+            
+            let followSize;
+            if (tradingMode === 'fixed') {
+              followSize = hlSize * fixedRatio;
+            } else if (tradingMode === 'equal') {
+              // For equal mode, calculate based on HL position * equalRatio
+              followSize = hlSize * equalRatio;
             } else {
-              logger.info(`[OrderExecutor] Address 2 in LOSS (浮亏) - executing market BUY to sync`);
+              followSize = hlSize * fixedRatio; // Default to fixed
+            }
+            
+            // Apply maximum position limit to prevent liquidation risk
+            const maxPositionSize = config.get('trading.maxPositionSize') || {};
+            const maxHypeSize = maxPositionSize.HYPE || 10.0; // Default max 10 HYPE
+            if (followSize > maxHypeSize) {
+              logger.warn(`[OrderExecutor] Calculated follow size ${followSize} exceeds max ${maxHypeSize}, capping...`);
+              followSize = maxHypeSize;
+            }
+            
+            // Round to precision
+            followSize = Math.round(followSize * 10000) / 10000;
+            
+            logger.info(`[OrderExecutor] Calculated follow size using ${tradingMode} ratio: ${followSize} HYPE (HL: ${hlSize}, ratio: ${tradingMode === 'fixed' ? fixedRatio : equalRatio})`);
+            
+            if (currentPrice > hlEntryPrice) {
+              logger.info(`[OrderExecutor] Address 2 in PROFIT (浮盈) - will add limit orders with calculated size ${followSize}`);
+            } else {
+              logger.info(`[OrderExecutor] Address 2 in LOSS (浮亏) - executing market BUY with calculated size ${followSize}`);
               
               try {
-                const marketOrder = await binanceClient.createMarketOrder('HYPE', 'B', hlSize, false);
+                const marketOrder = await binanceClient.createMarketOrder('HYPE', 'B', followSize, false);
                 if (marketOrder && marketOrder.orderId) {
-                  logger.info(`[OrderExecutor] Executed market BUY: ${hlSize}`);
+                  logger.info(`[OrderExecutor] Executed market BUY: ${followSize}`);
                   position = await binanceClient.getPositionDetails('HYPE');
                   currentPos = position ? position.amount : 0;
                 }

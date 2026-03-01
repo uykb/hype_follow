@@ -53,6 +53,14 @@ module.exports = {
     // Fixed ratio multiplier (only for fixed mode)
     fixedRatio: parseFloat(process.env.FIXED_RATIO) || 0.1,
 
+    // Maximum position size to prevent liquidation risk
+    maxPositionSize: {
+      BTC: 0.5,
+      ETH: 5,
+      SOL: 50,
+      HYPE: 10.0 // Maximum 10 HYPE
+    },
+
     // Account info cache TTL in seconds
     accountCacheTTL: parseInt(process.env.ACCOUNT_CACHE_TTL) || 60,
     
