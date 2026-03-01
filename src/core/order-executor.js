@@ -892,10 +892,8 @@ class OrderExecutor {
         const deltaCleared = signedTotalSize - signedMasterOrderSize;
         await positionTracker.consumePendingDelta(coin, deltaCleared);
         
-        // 7.1 For address 2 (martingale), after buy order execution, sync TP order
-        if (userAddress === '0xdc899ed4a80e7bbe7c86307715507c828901f196' && side === 'B') {
-          await this.syncAndUpdateTakeProfit(userAddress, coin);
-        }
+        // 7.1 TP sync is now handled in syncUserOrders after all BUY orders are processed
+        // Removed duplicate call here to prevent reduceOnly errors during bulk order processing
         
         // 8. Check if we need to re-open position (Martingale strategy)
         if (userStrategy === 'closeAllOnSell' && side === 'A') {
