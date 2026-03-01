@@ -196,20 +196,87 @@ class OrderExecutor {
             
             logger.info(`[OrderExecutor] Calculated follow size using ${tradingMode} ratio: ${followSize} HYPE (HL: ${hlSize}, ratio: ${tradingMode === 'fixed' ? fixedRatio : equalRatio})`);
             
-            if (currentPrice > hlEntryPrice) {
-              logger.info(`[OrderExecutor] Address 2 in PROFIT (浮盈) - will add limit orders with calculated size ${followSize}`);
-            } else {
-              logger.info(`[OrderExecutor] Address 2 in LOSS (浮亏) - executing market BUY with calculated size ${followSize}`);
+            // Regardless of profit/loss, we need to sync HL's limit orders to Binance
+            // Get the lowest BUY order from HL to create matching limit order on Binance
+            const hlOpenOrders = await apiClient.getUserOpenOrders(userAddress, 'HYPE');
+            const hlBuyOrders = hlOpenOrders ? hlOpenOrders.filter(o => o.side === 'B') : [];
+            
+            if (hlBuyOrders.length > 0) {
+              // Sort by price (ascending) to get the lowest price BUY order
+              hlBuyOrders.sort((a, b) => parseFloat(a.limitPx) - parseFloat(b.limitPx));
+              const targetOrder = hlBuyOrders[0];
+              
+              // Calculate follow size based on this order using ratio
+              const orderSize = parseFloat(targetOrder.sz);
+              let syncSize;
+              if (tradingMode === 'fixed') {
+                syncSize = orderSize * fixedRatio;
+              } else {
+                syncSize = orderSize * equalRatio;
+              }
+              
+              // Apply max position limit
+              const maxPositionSize = config.get('trading.maxPositionSize') || {};
+              const maxHypeSize = maxPositionSize.HYPE || 100.0;
+              if (syncSize > maxHypeSize) {
+                syncSize = maxHypeSize;
+              }
+              syncSize = Math.round(syncSize * 10000) / 10000;
+              
+              const limitPrice = parseFloat(targetOrder.limitPx);
+              
+              logger.info(`[OrderExecutor] Syncing HL order: BUY ${syncSize} @ ${limitPrice} (HL oid: ${targetOrder.oid})`);
               
               try {
-                const marketOrder = await binanceClient.createMarketOrder('HYPE', 'B', followSize, false);
-                if (marketOrder && marketOrder.orderId) {
-                  logger.info(`[OrderExecutor] Executed market BUY: ${followSize}`);
-                  position = await binanceClient.getPositionDetails('HYPE');
-                  currentPos = position ? position.amount : 0;
+                // Create limit order on Binance matching HL's order
+                const limitOrder = await binanceClient.createLimitOrder('HYPE', 'B', limitPrice, syncSize, false);
+                if (limitOrder && limitOrder.orderId) {
+                  const symbol = binanceClient.getBinanceSymbol('HYPE');
+                  await orderMapper.saveMapping(userAddress, targetOrder.oid, limitOrder.orderId, symbol);
+                  
+                  // Track this sync order in Redis for future updates
+                  await redis.set(`martingale:synced_order:${userAddress}:HYPE`, JSON.stringify({
+                    hlOid: targetOrder.oid.toString(),
+                    binanceOrderId: limitOrder.orderId.toString(),
+                    price: limitPrice,
+                    quantity: syncSize,
+                    side: 'B',
+                    syncedAt: Date.now()
+                  }), 'EX', 86400);
+                  
+                  logger.info(`[OrderExecutor] Created sync limit order: ${limitOrder.orderId} for ${syncSize} @ ${limitPrice}`);
                 }
-              } catch (marketError) {
-                logger.error(`[OrderExecutor] Failed to execute market order`, marketError);
+              } catch (limitError) {
+                logger.error(`[OrderExecutor] Failed to create sync limit order`, limitError);
+              }
+            }
+            
+            // Also handle TP (SELL) orders if position exists
+            const hlSellOrders = hlOpenOrders ? hlOpenOrders.filter(o => o.side === 'A') : [];
+            if (hlSellOrders.length > 0 && followSize > 0) {
+              // Sort by price (descending) to get highest price SELL order (TP)
+              hlSellOrders.sort((a, b) => parseFloat(b.limitPx) - parseFloat(a.limitPx));
+              const tpOrder = hlSellOrders[0];
+              
+              logger.info(`[OrderExecutor] Creating TP order: SELL ${followSize} @ ${tpOrder.limitPx}`);
+              
+              try {
+                const tpLimitOrder = await binanceClient.createLimitOrder('HYPE', 'A', parseFloat(tpOrder.limitPx), followSize, true);
+                if (tpLimitOrder && tpLimitOrder.orderId) {
+                  const symbol = binanceClient.getBinanceSymbol('HYPE');
+                  await orderMapper.saveMapping(userAddress, tpOrder.oid, tpLimitOrder.orderId, symbol);
+                  await redis.set(`exposure:tp:HYPE`, tpLimitOrder.orderId.toString());
+                  await redis.set(`martingale:last_tp:${userAddress}:HYPE`, JSON.stringify({
+                    oid: tpOrder.oid.toString(),
+                    price: tpOrder.limitPx,
+                    quantity: followSize,
+                    orderId: tpLimitOrder.orderId.toString()
+                  }), 'EX', 86400);
+                  
+                  logger.info(`[OrderExecutor] Created TP order: ${tpLimitOrder.orderId}`);
+                }
+              } catch (tpError) {
+                logger.error(`[OrderExecutor] Failed to create TP order`, tpError);
               }
             }
           }
@@ -320,6 +387,14 @@ class OrderExecutor {
 
         if (positionDiff >= POSITION_CHANGE_THRESHOLD) {
           logger.info(`[PositionMonitor] Position changed: ${this.lastKnownPosition} -> ${currentPos} (diff: ${positionDiff}). Triggering order sync...`);
+          
+          // Check if position went from > 0 to 0 (order filled/closed)
+          const wasPositionOpen = this.lastKnownPosition > 0;
+          const isPositionClosed = currentPos === 0;
+          
+          // Check if position went from 0 to > 0 (new position opened)
+          const wasNoPosition = this.lastKnownPosition === 0;
+          const hasNewPosition = currentPos > 0;
           
           await this.syncUserOrders(userAddress, { isInitialSync: false });
           
