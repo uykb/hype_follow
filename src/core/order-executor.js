@@ -237,16 +237,20 @@ class OrderExecutor {
         }
       }
       
-      // 5. Process SELL orders (take-profit) - only if have position
-      if (currentPos !== 0 && sellOrders.length > 0) {
-        logger.info(`[OrderExecutor] Processing ${sellOrders.length} SELL TP orders for ${userAddress}`);
+      // 5. Process SELL orders (take-profit) - only if have ACTUAL position (refreshed)
+      // Re-check position after BUY orders might have been filled
+      const freshPosition = await binanceClient.getPositionDetails('HYPE');
+      const freshCurrentPos = freshPosition ? freshPosition.amount : 0;
+      
+      if (freshCurrentPos !== 0 && sellOrders.length > 0) {
+        logger.info(`[OrderExecutor] Processing ${sellOrders.length} SELL TP orders for ${userAddress} (position: ${freshCurrentPos})`);
         
         for (const hlOrder of sellOrders) {
           if (await consistencyEngine.isOrderProcessed(hlOrder.oid)) {
             continue;
           }
           
-          const sellQuantity = Math.abs(currentPos);
+          const sellQuantity = Math.abs(freshCurrentPos);
           
           if (sellQuantity > 0) {
             const binanceOrder = await binanceClient.createLimitOrder(
@@ -299,6 +303,8 @@ class OrderExecutor {
         await this.executeLimitOrder(standardizedOrder);
         
         if (isAddress2) {
+          // Add a small delay to allow position to update in Binance
+          await new Promise(resolve => setTimeout(resolve, 500));
           await this.syncAndUpdateTakeProfit(userAddress, 'HYPE');
         }
       }
@@ -455,7 +461,22 @@ class OrderExecutor {
       // 5. Calculate new TP quantity based on current position
       const tpQuantity = Math.abs(currentPos);
       
-      // 6. If there's an existing TP order, cancel and replace
+      // 5.1 Double-check position exists before placing reduceOnly order
+      if (tpQuantity <= 0) {
+        logger.info(`[OrderExecutor] Position is 0 or negative, skipping TP order creation`);
+        if (existingTpOrderId) {
+          try {
+            await binanceClient.cancelOrder(binanceClient.getBinanceSymbol(coin), existingTpOrderId);
+            await redis.del(`exposure:tp:${coin}`);
+            logger.info(`[OrderExecutor] Cancelled TP order ${existingTpOrderId} (no position)`);
+          } catch (err) {
+            logger.warn(`[OrderExecutor] Failed to cancel TP order`, err);
+          }
+        }
+        return;
+      }
+      
+      // 6. If there's an existing TP order, check if we need to update it
       if (existingTpOrderId) {
         try {
           // Try to cancel existing TP order
