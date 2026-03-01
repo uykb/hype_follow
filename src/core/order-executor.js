@@ -185,7 +185,7 @@ class OrderExecutor {
             
             // Apply maximum position limit to prevent liquidation risk
             const maxPositionSize = config.get('trading.maxPositionSize') || {};
-            const maxHypeSize = maxPositionSize.HYPE || 10.0; // Default max 10 HYPE
+            const maxHypeSize = maxPositionSize.HYPE || 100.0; // Default max 100 HYPE
             if (followSize > maxHypeSize) {
               logger.warn(`[OrderExecutor] Calculated follow size ${followSize} exceeds max ${maxHypeSize}, capping...`);
               followSize = maxHypeSize;

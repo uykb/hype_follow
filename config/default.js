@@ -58,7 +58,7 @@ module.exports = {
       BTC: 0.5,
       ETH: 5,
       SOL: 50,
-      HYPE: 10.0 // Maximum 10 HYPE
+      HYPE: 100.0 // Maximum 100 HYPE
     },
 
     // Account info cache TTL in seconds
