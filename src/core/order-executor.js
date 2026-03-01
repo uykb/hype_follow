@@ -492,27 +492,92 @@ class OrderExecutor {
       }
       
       // 7. Create new TP order with updated quantity
-      const binanceOrder = await binanceClient.createLimitOrder(
-        coin, 'A', tpOrder.limitPx, tpQuantity, true // reduceOnly
-      );
-      
-      if (binanceOrder && binanceOrder.orderId) {
-        // Update TP tracking
-        await redis.set(`exposure:tp:${coin}`, binanceOrder.orderId.toString());
+      try {
+        const binanceOrder = await binanceClient.createLimitOrder(
+          coin, 'A', tpOrder.limitPx, tpQuantity, true // reduceOnly
+        );
         
-        // Update last TP info (including quantity)
-        await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
-          oid: tpOrder.oid.toString(),
-          price: tpOrder.limitPx,
-          quantity: currentPos, // Store the position quantity
-          orderId: binanceOrder.orderId.toString()
-        }), 'EX', 86400);
-        
-        // Update mapping
-        const symbol = binanceClient.getBinanceSymbol(coin);
-        await orderMapper.saveMapping(userAddress, tpOrder.oid, binanceOrder.orderId, symbol);
-        
-        logger.info(`[OrderExecutor] Updated TP order: ${binanceOrder.orderId} for ${tpQuantity} ${coin} @ ${tpOrder.limitPx}`);
+        if (binanceOrder && binanceOrder.orderId) {
+          // Update TP tracking
+          await redis.set(`exposure:tp:${coin}`, binanceOrder.orderId.toString());
+          
+          // Update last TP info (including quantity)
+          await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+            oid: tpOrder.oid.toString(),
+            price: tpOrder.limitPx,
+            quantity: currentPos, // Store the position quantity
+            orderId: binanceOrder.orderId.toString()
+          }), 'EX', 86400);
+          
+          // Update mapping
+          const symbol = binanceClient.getBinanceSymbol(coin);
+          await orderMapper.saveMapping(userAddress, tpOrder.oid, binanceOrder.orderId, symbol);
+          
+          logger.info(`[OrderExecutor] Updated TP order: ${binanceOrder.orderId} for ${tpQuantity} ${coin} @ ${tpOrder.limitPx}`);
+        }
+      } catch (orderError) {
+        // Handle reduceOnly error - TP order likely already exists with same/different quantity
+        if (orderError.code === -2022) {
+          logger.info(`[OrderExecutor] ReduceOnly rejected, TP order may already exist. Checking existing order...`);
+          
+          // Check if we already have a TP order in Redis that might work
+          const existingTpOrderId = await redis.get(`exposure:tp:${coin}`);
+          if (existingTpOrderId) {
+            try {
+              const existingOrder = await binanceClient.client.futuresGetOrder({
+                symbol: binanceClient.getBinanceSymbol(coin),
+                orderId: existingTpOrderId.toString()
+              });
+              
+              if (existingOrder && existingOrder.status === 'NEW') {
+                logger.info(`[OrderExecutor] Existing TP order ${existingTpOrderId} is active, keeping it.`);
+                // Update the last tp info to prevent future sync attempts
+                await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+                  oid: tpOrder.oid.toString(),
+                  price: tpOrder.limitPx,
+                  quantity: currentPos,
+                  orderId: existingTpOrderId.toString()
+                }), 'EX', 86400);
+                return;
+              }
+            } catch (checkErr) {
+              logger.debug(`[OrderExecutor] Could not check existing TP order`, checkErr.message);
+            }
+          }
+          
+          // If we get here, we need to cancel the existing order and retry
+          logger.info(`[OrderExecutor] Cancelling existing TP and retrying...`);
+          if (existingTpOrderId) {
+            try {
+              await binanceClient.cancelOrder(binanceClient.getBinanceSymbol(coin), existingTpOrderId);
+              await redis.del(`exposure:tp:${coin}`);
+            } catch (cancelErr) {
+              logger.debug(`[OrderExecutor] Could not cancel existing TP`, cancelErr.message);
+            }
+          }
+          
+          // Retry once after cancel
+          const retryOrder = await binanceClient.createLimitOrder(
+            coin, 'A', tpOrder.limitPx, tpQuantity, true
+          );
+          
+          if (retryOrder && retryOrder.orderId) {
+            await redis.set(`exposure:tp:${coin}`, retryOrder.orderId.toString());
+            await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+              oid: tpOrder.oid.toString(),
+              price: tpOrder.limitPx,
+              quantity: currentPos,
+              orderId: retryOrder.orderId.toString()
+            }), 'EX', 86400);
+            
+            const symbol = binanceClient.getBinanceSymbol(coin);
+            await orderMapper.saveMapping(userAddress, tpOrder.oid, retryOrder.orderId, symbol);
+            
+            logger.info(`[OrderExecutor] Created TP order after retry: ${retryOrder.orderId}`);
+          }
+        } else {
+          throw orderError;
+        }
       }
       
     } catch (error) {
