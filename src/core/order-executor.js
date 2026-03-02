@@ -22,8 +22,11 @@ class OrderExecutor {
    * @param {string} userAddress
    */
   async adjustTakeProfitOrder(coin, userAddress) {
+    const ADDRESS2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
+    
     try {
       const redis = require('../utils/redis');
+      const apiClient = require('../hyperliquid/api-client');
       const tpOrderId = await redis.get(`exposure:tp:${coin}`);
       
       if (!tpOrderId) {
@@ -33,52 +36,92 @@ class OrderExecutor {
 
       logger.info(`[OrderExecutor] Auto-adjusting TP order ${tpOrderId} for ${coin} due to position change...`);
 
-      // 1. Get original HL order mapping to find the original target price
-      const mapping = await orderMapper.getHyperliquidOrder(tpOrderId);
-      if (!mapping) {
-        logger.warn(`[OrderExecutor] Cannot adjust TP order ${tpOrderId}: Mapping lost.`);
-        // We might want to remove tracking if mapping is permanently gone, but leave it for now
-        return;
-      }
-
-      // 2. Get current Binance position
-      const currentPos = await binanceClient.getPosition(coin);
+      // 1. Get current Binance position
+      const position = await binanceClient.getPositionDetails(coin);
+      const currentPos = position ? position.amount : 0;
       const absPos = Math.abs(currentPos);
       
       if (absPos === 0) {
-         logger.info(`[OrderExecutor] Position for ${coin} is 0. TP order adjustment skipped (should be canceled/filled separately).`);
-         return;
+        // Position is 0, cancel the TP order
+        try {
+          const symbol = binanceClient.getBinanceSymbol(coin);
+          await binanceClient.cancelOrder(symbol, tpOrderId);
+          await redis.del(`exposure:tp:${coin}`);
+          logger.info(`[OrderExecutor] Position is 0. Cancelled TP order ${tpOrderId}`);
+        } catch (cancelError) {
+          logger.debug(`[OrderExecutor] Could not cancel TP order`, cancelError.message);
+        }
+        return;
       }
 
-      // 3. Get the Binance order to find its current price
-      const symbol = binanceClient.getBinanceSymbol(coin);
-      const binanceOrder = await binanceClient.client.futuresGetOrder({
-        symbol: symbol,
-        orderId: tpOrderId.toString()
-      });
+      // 2. Get latest HL open orders and find highest price SELL order
+      const hlOrders = await apiClient.getUserOpenOrders(userAddress, coin);
+      const sellOrders = hlOrders ? hlOrders.filter(o => o.side === 'A') : [];
       
-      const currentPrice = binanceOrder.price;
-      const currentSide = binanceOrder.side;
+      // 3. If no SELL orders in HL, cancel our TP order and return
+      if (sellOrders.length === 0) {
+        logger.info(`[OrderExecutor] No SELL orders in HL for ${coin}. Cancelling our TP order.`);
+        try {
+          const symbol = binanceClient.getBinanceSymbol(coin);
+          await binanceClient.cancelOrder(symbol, tpOrderId);
+          await redis.del(`exposure:tp:${coin}`);
+          logger.info(`[OrderExecutor] Cancelled TP order ${tpOrderId} (no SELL orders in HL)`);
+        } catch (cancelError) {
+          logger.debug(`[OrderExecutor] Could not cancel TP order`, cancelError.message);
+        }
+        return;
+      }
 
-      // 4. Update the order atomically
-      logger.info(`[OrderExecutor] Adjusting ${coin} TP Order ${tpOrderId} to new size ${absPos}`);
-      const newBinanceOrder = await binanceClient.cancelReplaceOrder(
+      // 4. Find the highest price SELL order (TP order)
+      sellOrders.sort((a, b) => parseFloat(b.limitPx) - parseFloat(a.limitPx));
+      const latestTpOrder = sellOrders[0];
+      const latestTpPrice = parseFloat(latestTpOrder.limitPx);
+      const latestTpOid = latestTpOrder.oid;
+
+      logger.info(`[OrderExecutor] Latest HL TP order: ${latestTpOid} - SELL @ ${latestTpPrice}`);
+
+      // 5. Get original mapping to clean up
+      const mapping = await orderMapper.getHyperliquidOrder(tpOrderId);
+      const oldOid = mapping ? mapping.oid : null;
+
+      // 6. Cancel existing TP order on Binance
+      const symbol = binanceClient.getBinanceSymbol(coin);
+      try {
+        await binanceClient.cancelOrder(symbol, tpOrderId);
+        logger.info(`[OrderExecutor] Cancelled old TP order ${tpOrderId}`);
+      } catch (cancelError) {
+        // Order might already be filled, that's ok
+        logger.debug(`[OrderExecutor] Could not cancel old TP order`, cancelError.message);
+      }
+
+      // 7. Create new TP order with latest HL price and current position
+      logger.info(`[OrderExecutor] Creating new TP order: SELL ${absPos} @ ${latestTpPrice}`);
+      const newBinanceOrder = await binanceClient.createLimitOrder(
         coin,
-        tpOrderId,
-        currentSide === 'BUY' ? 'B' : 'A', // convert back to standard side format for client
-        currentPrice, // keep same price
-        absPos,       // NEW QUANTITY: full current position
-        true          // ALWAYS reduceOnly for TP
+        'A', // SELL
+        latestTpPrice,
+        absPos,
+        true // reduceOnly
       );
 
       if (newBinanceOrder && newBinanceOrder.orderId) {
-        // Update mappings
-        await orderMapper.deleteMapping(userAddress, mapping.oid);
-        await orderMapper.saveMapping(userAddress, mapping.oid, newBinanceOrder.orderId, symbol);
+        // Clean up old mapping if exists
+        if (oldOid) {
+          await orderMapper.deleteMapping(userAddress, oldOid);
+        }
+        // Save new mapping
+        await orderMapper.saveMapping(userAddress, latestTpOid, newBinanceOrder.orderId, symbol);
         
         // Update Tracking
         await redis.set(`exposure:tp:${coin}`, newBinanceOrder.orderId);
-        logger.info(`[OrderExecutor] TP Order successfully auto-adjusted: ${tpOrderId} -> ${newBinanceOrder.orderId}`);
+        await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+          oid: latestTpOid.toString(),
+          price: latestTpPrice.toString(),
+          quantity: absPos,
+          orderId: newBinanceOrder.orderId.toString()
+        }), 'EX', 86400);
+        
+        logger.info(`[OrderExecutor] TP Order successfully updated: ${tpOrderId} -> ${newBinanceOrder.orderId} (price: ${latestTpPrice}, size: ${absPos})`);
       }
     } catch (error) {
       // If error is unknown order, maybe it just filled. Clean up tracking.
