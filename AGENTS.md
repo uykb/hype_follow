@@ -8,35 +8,40 @@ It covers build commands, code style, architecture, and workflow rules to ensure
 ### Backend (Root)
 The backend is a Node.js application responsible for mirroring Hyperliquid orders to Binance.
 
-*   **Install Dependencies**: `npm install`
-*   **Start Application**:
-    *   `npm start`: Runs `src/index.js` (Production mode).
-    *   `npm run dev`: Runs `src/index.js` with `nodemon` for auto-restarts (Development).
-    *   `npm run monitor`: Runs the status monitoring server (`src/monitoring/api-server.js`).
+- **Install Dependencies**: `npm install`
+- **Start Application**:
+  - `npm start`: Runs `src/index.js` (Production mode).
+  - `npm run dev`: Runs `src/index.js` with `nodemon` for auto-restarts (Development).
+  - `npm run monitor`: Runs the status monitoring server (`src/monitoring/api-server.js`).
+- **Admin Auth Reset**: `npm run reset-auth` clears TOTP setup in Redis and returns the system to setup mode.
+- **Environment**:
+  - Uses `config` for settings (see `config/default.js`).
+  - Monitoring API listens on `MONITORING_PORT` (default `49618`).
 
 ### Testing (Backend)
 There is **no centralized test runner** (like Jest/Mocha) configured in `package.json`.
 Tests are standalone scripts in the `tests/` directory using the built-in `assert` module.
 
-*   **Run All Tests**: There is no single command. You must run them individually.
-*   **Run a Single Test**:
-    ```bash
-    node tests/test-calculation.js
-    node tests/test-api-security.js
-    node tests/test-order-validation.js
-    ```
-*   **Creating Tests**:
-    *   Create a new file in `tests/` (e.g., `tests/test-new-feature.js`).
-    *   Use `require('assert')` for assertions.
-    *   **CRITICAL**: You must mock external dependencies (Redis, Binance, Hyperliquid) using standard JS replacement or proxying. Do not make real API calls in tests.
+- **Run All Tests**: There is no single command. Run them individually.
+- **Run a Single Test**:
+  ```bash
+  node tests/test-calculation.js
+  node tests/test-api-security.js
+  node tests/test-order-validation.js
+  node tests/test-race-serialization.js
+  ```
+- **Creating Tests**:
+  - Create a new file in `tests/` (e.g., `tests/test-new-feature.js`).
+  - Use `require('assert')` for assertions.
+  - **CRITICAL**: Mock `ioredis`, `binance-api-node`, and any external calls. Do not hit real services.
 
 ### Dashboard (Frontend)
 The `dashboard/` directory contains a React application built with Vite.
 
-*   **Setup**: `cd dashboard && npm install`
-*   **Development**: `cd dashboard && npm run dev` (Starts Vite dev server).
-*   **Build**: `cd dashboard && npm run build` (Outputs to `dashboard/dist/`).
-*   **Linting**: Standard ESLint usage if configured (check `dashboard/eslint.config.js` if present, otherwise rely on IDE formatting).
+- **Setup**: `cd dashboard && npm install`
+- **Development**: `cd dashboard && npm run dev` (Starts Vite dev server).
+- **Build**: `cd dashboard && npm run build` (Outputs to `dashboard/dist/`).
+- **Stack**: React + Vite + MUI. No ESLint config file present by default.
 
 ## 2. Code Style & Conventions
 
@@ -90,48 +95,59 @@ Follow these rules strictly to maintain codebase consistency.
 The system bridges Hyperliquid (Master) and Binance Futures (Follower).
 
 ### Core Components
-1.  **Hyperliquid WS** (`src/hyperliquid/`): Listens for `order` (Limit) and `fill` (Market) events.
-2.  **Order Executor** (`src/core/order-executor.js`): The brain. Decides whether to place, update, or skip orders.
-3.  **Position Tracker** (`src/core/position-tracker.js`): Tracks the "Delta" (difference) between Master and Follower to ensure eventual consistency.
-4.  **Consistency Engine** (`src/core/consistency-engine.js`): Handles edge cases like missed events or orphan fills.
-5.  **Redis**: Acts as the state database.
-    *   `map:h2b:...`: Maps Hyperliquid OID -> Binance OrderID.
-    *   `pos:delta:...`: Stores pending size that couldn't be executed immediately.
+1. **Hyperliquid WS** (`src/hyperliquid/`): Listens for `order` (Limit) and `fill` (Market) events.
+2. **Order Executor** (`src/core/order-executor.js`): Decides whether to place, update, or skip orders.
+3. **Position Tracker** (`src/core/position-tracker.js`): Tracks the delta between Master and Follower.
+4. **Consistency Engine** (`src/core/consistency-engine.js`): Handles missed events and orphan fills.
+5. **Order Validator** (`src/core/order-validator.js`): Periodically reconciles full snapshots and reports drift.
+6. **Exposure Manager** (`src/core/exposure-manager.js`): Calculates target exposure and drift for display and TP management.
+7. **Account Manager** (`src/core/account-manager.js`): Aggregates equity information and account utilities.
+8. **Monitoring API** (`src/monitoring/api-server.js`): Serves REST and WebSocket endpoints for status, logs, and manual actions.
+9. **Auth** (`src/utils/auth-util.js`, `src/middleware/auth-middleware.js`): TOTP setup and JWT-based API protection.
+10. **Redis**: Acts as the state database.
+    - `map:h2b:<oid>`: Maps Hyperliquid OID -> Binance OrderID.
+    - `pos:delta:<coin>`: Stores pending size that couldn't be executed immediately.
+    - `exposure:tp:<coin>`: Active Take Profit (Reduce-Only) order ID for a coin.
+    - `orderLock:<oid>`: Short TTL lock to avoid concurrent updates.
 
 ### Key Logic: Dual-Track Reconciliation
 The system maintains consistency using two parallel tracks:
-1.  **Fast Path (Incremental)**: Triggered by WS `order`/`fill` events. Pursues low latency by applying incremental changes to the position.
-2.  **Slow Path (Full Reconciliation)**: Triggered by `OrderValidator` every 60s. Fetches full position snapshots from HL and Binance, calculates the "Drift" (`Target - Actual`), and executes realignment orders if drift > 1%.
+1. **Fast Path (Incremental)**: Triggered by WS `order`/`fill` events to apply low-latency changes.
+2. **Slow Path (Full Reconciliation)**: Triggered by `OrderValidator` every 60s. Fetches full snapshots from HL and Binance, calculates drift (`Target - Actual`), and realigns if drift > 1%.
 
 ### Redis Data Structures
 Understanding Redis keys is crucial for debugging and state management:
-*   `map:h2b:<oid>`: String. Stores the mapped Binance Order ID for a given Hyperliquid Order ID.
-*   `pos:delta:<coin>`: String (Float). Stores the accumulated position difference. **Reset during reconciliation.**
-*   `orderLock:<oid>`: String (TTL 10s). Distributed lock to prevent race conditions during order updates.
-*   `exposure:tp:<coin>`: String. Stores the active Take Profit (Reduce-Only) order ID for a coin.
+- `map:h2b:<oid>`: String. Mapped Binance Order ID for a given Hyperliquid Order ID.
+- `pos:delta:<coin>`: String (Float). Accumulated position difference. Reset during reconciliation.
+- `orderLock:<oid>`: String (TTL 10s). Distributed lock for updates.
+- `exposure:tp:<coin>`: String. Active Take Profit (Reduce-Only) order ID for a coin.
+- `admin:totp:secret`: String. TOTP secret for admin access. Cleared by `npm run reset-auth`.
 
 ## 4. Agent Workflow Rules
 
-1.  **Analyze First**: Before editing, run `ls -R src` and `grep` to understand the dependency graph. Use `glob` to find relevant files.
-2.  **Mocking is Mandatory**: When asked to create tests, you **must** mock `ioredis` and `binance-api-node`.
-    *   **Do not** attempt to connect to a real Redis instance in tests.
-    *   Example:
-        ```javascript
-        const mockRedis = {
-          get: async () => null,
-          set: async () => 'OK',
-          disconnect: () => {}
-        };
-        ```
-3.  **Preserve State**: Do not modify `config/default.js` unless explicitly asked. It contains production defaults.
-4.  **One-Way Mode**: The system strictly relies on Binance "One-Way Mode". Do not introduce "Hedge Mode" logic.
-5.  **Safety**:
-    *   Never log raw API keys or secrets.
-    *   Never turn off `riskControl` checks in production code.
-6.  **Dashboard**: If editing the dashboard, remember it is a separate scope. You must `cd dashboard` (via `workdir`) for any frontend commands.
+1. **Analyze First**: Inspect `src/` structure and dependencies before editing.
+2. **Mocking is Mandatory**: When creating tests, mock `ioredis`, `binance-api-node`, and external calls.
+   ```javascript
+   const mockRedis = {
+     get: async () => null,
+     set: async () => 'OK',
+     disconnect: () => {}
+   };
+   ```
+3. **Preserve State**: Do not modify `config/default.js` unless explicitly asked.
+4. **One-Way Mode**: The system relies on Binance One-Way Mode only.
+5. **Safety**:
+   - Never log raw API keys or secrets.
+   - Never disable `riskControl` in production code.
+6. **Dashboard Scope**: For frontend commands, work under `dashboard/`.
+7. **Auth & Monitoring**:
+   - Initial access requires TOTP setup via `/api/admin/setup-qr` and `/api/admin/setup`.
+   - Subsequent API/WebSocket access requires a valid JWT (query `token` for WS).
+   - Use `npm run reset-auth` to clear TOTP and re-enter setup mode.
 
 ## 5. Common Pitfalls to Avoid
-*   **Async/Await in Loops**: Be careful with `await` inside `forEach`. Use `for...of` or `Promise.all` instead.
-*   **Redis Keys**: Always use the defined constants or prefixes. Do not invent new key schemes without updating documentation.
-*   **Floating Point Math**: When calculating sizes, be aware of JS floating point precision. Use helper functions in `position-calculator.js` where possible.
-*   **Error Swallowing**: Do not use empty `catch` blocks. Always log the error with `logger.error`.
+- **Async/Await in Loops**: Avoid `await` in `forEach`. Prefer `for...of` or `Promise.all`.
+- **Redis Keys**: Reuse defined key patterns and constants.
+- **Floating Point Math**: Use helpers in `position-calculator.js` to avoid precision issues.
+- **Error Swallowing**: Always log errors with `logger.error`.
+- **Mode Mismatch**: Do not introduce Binance Hedge Mode logic.
