@@ -53,6 +53,10 @@ func NewFSM(symbol string, cli *binance.Client, strat *strategy.Calculator, risk
 
 func (f *FSM) Run(ctx context.Context) {
 	logger.Log.Info("FSM Started", zap.String("symbol", f.Symbol))
+	
+	// Initial Position Sync
+	f.syncPosition()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -74,6 +78,8 @@ func (f *FSM) handleEvent(evt events.Event) {
 		switch evt.Type {
 		case events.EvtHLOrder:
 			f.handleHLOrder(evt)
+		case events.EvtHLOrderCancel:
+			f.handleHLOrderCancel(evt)
 		case events.EvtHLFill:
 			f.handleHLFill(evt)
 		}
@@ -109,7 +115,21 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 	metrics.Equity.WithLabelValues("binance").Set(binanceEquity)
 	metrics.Equity.WithLabelValues("hyperliquid").Set(hlEquity)
 	
-	quantity := f.Strategy.CalculateQuantity(binanceSymbol, payload.Size, hlEquity, binanceEquity)
+	var quantity float64
+	if payload.IsReduceOnly {
+		// Grid Strategy: Sync TP size to current position
+		currentPos := f.CurrentPosition
+		if currentPos < 0 { currentPos = -currentPos } // abs
+		
+		if currentPos == 0 {
+			logger.Log.Warn("Received ReduceOnly order but current position is 0", zap.String("oid", payload.OrderID))
+			return
+		}
+		quantity = currentPos
+		logger.Log.Info("Syncing TP Order Size to Current Position", zap.Float64("qty", quantity))
+	} else {
+		quantity = f.Strategy.CalculateQuantity(binanceSymbol, payload.Size, hlEquity, binanceEquity)
+	}
 
 	// 4. Risk Check
 	if err := f.Risk.CheckOrder(binanceSymbol, f.CurrentPosition, quantity); err != nil {
@@ -163,11 +183,73 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 	logger.Log.Info("Order Placed Successfully", zap.String("orderID", f.PendingOrderID))
 }
 
+func (f *FSM) handleHLOrderCancel(evt events.Event) {
+	payload, ok := evt.Payload.(events.HLOrderPayload)
+	if !ok {
+		return
+	}
+
+	binanceSymbol := payload.Coin + "USDT"
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	binanceOID, err := f.Repo.GetBinanceOrderID(ctx, payload.OrderID)
+	if err != nil {
+		logger.Log.Warn("Failed to find mapped order for cancellation", zap.String("hl_oid", payload.OrderID))
+		return
+	}
+
+	logger.Log.Info("Cancelling Binance Order", zap.Int64("binance_oid", binanceOID))
+	
+	err = f.BinanceCli.CancelOrder(ctx, binanceSymbol, binanceOID)
+	if err != nil {
+		logger.Log.Error("Failed to cancel Binance order", zap.Error(err))
+		return
+	}
+	
+	metrics.OrderCancelled.WithLabelValues(binanceSymbol).Inc()
+}
+
 func (f *FSM) handleHLFill(evt events.Event) {
 	// Logic for fills (Market Replication)
+	// Do not update position here to avoid double counting or drift.
+	// Position is updated via Binance Execution Reports.
+	logger.Log.Info("HL Fill Received (Logging Only)", zap.String("symbol", f.Symbol))
 }
 
 func (f *FSM) handleBinanceExecution(evt events.Event) {
+	payload, ok := evt.Payload.(events.BinanceExecutionPayload)
+	if !ok {
+		return
+	}
+
+	if payload.ExecutionType == "TRADE" {
+		if payload.Side == "BUY" {
+			f.CurrentPosition += payload.Quantity
+		} else {
+			f.CurrentPosition -= payload.Quantity
+		}
+		logger.Log.Info("Position Updated via Binance Execution", zap.Float64("new_pos", f.CurrentPosition))
+	}
+
 	// Update state based on execution
 	f.CurrentState = StateIdle
+}
+
+func (f *FSM) syncPosition() {
+	positions, err := f.BinanceCli.GetPositions(context.Background())
+	if err != nil {
+		logger.Log.Error("Failed to sync position", zap.Error(err))
+		return
+	}
+	for _, p := range positions {
+		// f.Symbol is likely "HYPE", p.Symbol is "HYPEUSDT"
+		if p.Symbol == f.Symbol + "USDT" {
+			amt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+			f.CurrentPosition = amt
+			logger.Log.Info("Position Synced", zap.String("symbol", f.Symbol), zap.Float64("amt", f.CurrentPosition))
+			break
+		}
+	}
 }

@@ -9,6 +9,7 @@ type EventType int
 const (
 	// Hyperliquid Events
 	EvtHLOrder EventType = iota
+	EvtHLOrderCancel
 	EvtHLFill
 
 	// Binance Events
@@ -28,12 +29,13 @@ type Event struct {
 // Payload definitions
 
 type HLOrderPayload struct {
-	OrderID     string
-	Coin        string
-	Side        string // "Buy" or "Sell"
-	LimitPrice  float64
-	Size        float64
+	OrderID      string
+	Coin         string
+	Side         string // "Buy" or "Sell"
+	LimitPrice   float64
+	Size         float64
 	IsReduceOnly bool
+	Status       string // "open", "canceled", "filled", etc.
 }
 
 type HLFillPayload struct {

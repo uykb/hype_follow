@@ -174,9 +174,19 @@ func (c *Client) processOrderUpdates(data []byte) {
 
 		price, _ := strconv.ParseFloat(order.LimitPx, 64)
 		size, _ := strconv.ParseFloat(order.Sz, 64)
+
+		var eventType events.EventType
+		switch order.Status {
+		case "open", "triggered":
+			eventType = events.EvtHLOrder
+		case "canceled", "margin_canceled":
+			eventType = events.EvtHLOrderCancel
+		default:
+			continue
+		}
 		
 		evt := events.Event{
-			Type:      events.EvtHLOrder,
+			Type:      eventType,
 			Timestamp: time.Unix(order.Timestamp/1000, 0),
 			Symbol:    order.Coin,
 			Payload: events.HLOrderPayload{
@@ -186,6 +196,7 @@ func (c *Client) processOrderUpdates(data []byte) {
 				LimitPrice:   price,
 				Size:         size,
 				IsReduceOnly: order.ReduceOnly,
+				Status:       order.Status,
 			},
 		}
 		c.eventChan <- evt
@@ -204,14 +215,12 @@ func (c *Client) processUserFills(data []byte) {
 	}
 
 	for _, fill := range fillsData.Fills {
-		if !fill.Crossed {
-			continue
-		}
-		
 		// Optimization: Filter for HYPE coin only
 		if fill.Coin != "HYPE" {
 			continue
 		}
+		
+		// Note: Removed Crossed check to support Maker fills (Grid Strategy)
 
 		price, _ := strconv.ParseFloat(fill.Px, 64)
 		size, _ := strconv.ParseFloat(fill.Sz, 64)
