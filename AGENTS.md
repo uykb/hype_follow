@@ -1,153 +1,106 @@
 # HypeFollow Agent Guidelines
 
-This document provides comprehensive instructions for AI agents (and human developers) working on the HypeFollow repository.
+This document provides comprehensive instructions for AI agents (and human developers) working on the HypeFollow repository (Go Version).
 It covers build commands, code style, architecture, and workflow rules to ensure consistency and stability.
 
 ## 1. Build, Lint, and Test Commands
 
 ### Backend (Root)
-The backend is a Node.js application responsible for mirroring Hyperliquid orders to Binance.
+The backend is a high-performance Go application implementing an Event-Driven Finite State Machine (ED-FSM) architecture.
 
-- **Install Dependencies**: `npm install`
-- **Start Application**:
-  - `npm start`: Runs `src/index.js` (Production mode).
-  - `npm run dev`: Runs `src/index.js` with `nodemon` for auto-restarts (Development).
-  - `npm run monitor`: Runs the status monitoring server (`src/monitoring/api-server.js`).
-- **Admin Auth Reset**: `npm run reset-auth` clears TOTP setup in Redis and returns the system to setup mode.
-- **Environment**:
-  - Uses `config` for settings (see `config/default.js`).
-  - Monitoring API listens on `MONITORING_PORT` (default `49618`).
+- **Dependencies**: `go mod tidy`
+- **Build**: `make build` (Outputs to `bin/hypefollow-bot` or `bin/bot.exe`)
+- **Run**: `make run` or `./bin/bot.exe`
+- **Clean**: `make clean`
 
-### Testing (Backend)
-There is **no centralized test runner** (like Jest/Mocha) configured in `package.json`.
-Tests are standalone scripts in the `tests/` directory using the built-in `assert` module.
-
-- **Run All Tests**: There is no single command. Run them individually.
-- **Run a Single Test**:
-  ```bash
-  node tests/test-calculation.js
-  node tests/test-api-security.js
-  node tests/test-order-validation.js
-  node tests/test-race-serialization.js
-  ```
-- **Creating Tests**:
-  - Create a new file in `tests/` (e.g., `tests/test-new-feature.js`).
-  - Use `require('assert')` for assertions.
-  - **CRITICAL**: Mock `ioredis`, `binance-api-node`, and any external calls. Do not hit real services.
+### Testing
+- **Run All Tests**: `go test ./...`
+- **Run Specific Package**: `go test ./internal/core/strategy`
+- **Run Specific Test**: `go test -v -run TestCalculateQuantity ./internal/core/strategy`
 
 ### Dashboard (Frontend)
-The `dashboard/` directory contains a React application built with Vite.
+The `dashboard/` directory contains a React application built with Vite. (Currently decoupling from backend)
 
 - **Setup**: `cd dashboard && npm install`
-- **Development**: `cd dashboard && npm run dev` (Starts Vite dev server).
-- **Build**: `cd dashboard && npm run build` (Outputs to `dashboard/dist/`).
-- **Stack**: React + Vite + MUI. No ESLint config file present by default.
+- **Development**: `cd dashboard && npm run dev`
+- **Build**: `cd dashboard && npm run build`
 
 ## 2. Code Style & Conventions
 
-Follow these rules strictly to maintain codebase consistency.
+Follow standard Go conventions (Effective Go).
 
-### General (Backend)
-*   **Runtime**: Node.js (Latest LTS).
-*   **Module System**: **CommonJS** (`require` / `module.exports`).
-    *   *Do not* use ES Modules (`import` / `export`) in `src/`.
-*   **Configuration**: Use the `config` module (`require('config')`).
-    *   Never hardcode secrets or environment-dependent values.
-    *   Defaults are in `config/default.js`.
+### General
+*   **Language**: Go 1.22+
+*   **Formatting**: Always run `gofmt` (or let IDE handle it).
+*   **Linting**: Use `golangci-lint` if available.
+*   **Configuration**: Use `Viper` (`config.yaml`).
+    *   Secrets must be loaded from environment variables or secure config files.
+    *   Never hardcode API keys.
 
-### Formatting
-*   **Indentation**: **2 spaces**.
-*   **Semicolons**: **Always** use semicolons.
-*   **Quotes**: Use **single quotes** (`'`) for strings. Use backticks (`` ` ``) for template literals.
-*   **Braces**: K&R style (opening brace on the same line).
-*   **Max Line Length**: Aim for 100-120 characters, but readability takes precedence.
-*   **Trailing Commas**: Acceptable in multi-line objects/arrays.
+### Project Layout (Standard Go Layout)
+*   `cmd/bot/`: Application entry point (`main.go`).
+*   `internal/`: Private application and library code.
+    *   `config/`: Configuration loading.
+    *   `core/`: Business logic (FSM, Events, Strategy, Risk).
+    *   `exchange/`: Exchange adapters (Binance, Hyperliquid).
+    *   `repository/`: Data access layer (Redis).
+*   `pkg/`: Library code ok to use by external applications (e.g., `logger`, `metrics`).
 
 ### Naming
-*   **Variables/Functions**: `camelCase` (e.g., `calculateQuantity`, `processOrder`).
-*   **Classes**: `PascalCase` (e.g., `OrderExecutor`, `BinanceClient`).
-*   **Files**: `kebab-case` (e.g., `order-mapper.js`, `risk-control.js`).
-*   **Constants**: `UPPER_CASE` (e.g., `DEFAULT_TIMEOUT`, `REDIS_KEY_PREFIX`).
-*   **Private Members**: Prefix with `_` to indicate internal use (e.g., `_connectWebSocket`), even if not strictly private.
-
-### Type Safety & Documentation
-*   **JSDoc**: Use JSDoc for all complex functions, especially public methods in core classes.
-    ```javascript
-    /**
-     * Calculate quantity based on ratio and risk limits.
-     * @param {string} coin - The coin symbol (e.g., 'BTC')
-     * @param {number} masterSize - The size of the master order
-     * @returns {Promise<number>} - The calculated follower size
-     */
-    async function calculateQuantity(coin, masterSize) { ... }
-    ```
-*   **Type Checking**: This is standard JavaScript. Be defensive with inputs.
+*   **Files**: `snake_case.go` (e.g., `ws_client.go`).
+*   **Structs/Interfaces**: `PascalCase` (e.g., `RiskManager`, `OrderExecutor`).
+*   **Variables**: `camelCase` for local, `PascalCase` for exported.
+*   **Constants**: `PascalCase` or `UPPER_CASE` depending on context, but prefer typed constants.
 
 ### Error Handling
-*   **Logging**: **ALWAYS** use the custom logger (`src/utils/logger.js`).
-    *   `logger.info('Order placed', { orderId: '...' })`
-    *   `logger.error('Failed to sync', error)`
-*   **Async/Await**: Use `async/await` paired with `try/catch` blocks. Avoid raw Promise chains (`.then().catch()`) for complex logic.
-*   **Process Exit**: Only exit `process.exit(1)` on critical startup failures (e.g., invalid API keys).
+*   **Return Errors**: Functions should return `error` as the last return value.
+*   **Wrapping**: Use `fmt.Errorf("context: %w", err)` to wrap errors.
+*   **Logging**: Use `pkg/logger` (Zap).
+    *   `logger.Log.Info("Order placed", zap.String("oid", oid))`
+    *   `logger.Log.Error("Failed to sync", zap.Error(err))`
 
 ## 3. Architecture Overview
 
-The system bridges Hyperliquid (Master) and Binance Futures (Follower).
+The system uses an **Event-Driven Finite State Machine (ED-FSM)** architecture.
 
 ### Core Components
-1. **Hyperliquid WS** (`src/hyperliquid/`): Listens for `order` (Limit) and `fill` (Market) events.
-2. **Order Executor** (`src/core/order-executor.js`): Decides whether to place, update, or skip orders.
-3. **Position Tracker** (`src/core/position-tracker.js`): Tracks the delta between Master and Follower.
-4. **Consistency Engine** (`src/core/consistency-engine.js`): Handles missed events and orphan fills.
-5. **Order Validator** (`src/core/order-validator.js`): Periodically reconciles full snapshots and reports drift.
-6. **Exposure Manager** (`src/core/exposure-manager.js`): Calculates target exposure and drift for display and TP management.
-7. **Account Manager** (`src/core/account-manager.js`): Aggregates equity information and account utilities.
-8. **Monitoring API** (`src/monitoring/api-server.js`): Serves REST and WebSocket endpoints for status, logs, and manual actions.
-9. **Auth** (`src/utils/auth-util.js`, `src/middleware/auth-middleware.js`): TOTP setup and JWT-based API protection.
-10. **Redis**: Acts as the state database.
-    - `map:h2b:<oid>`: Maps Hyperliquid OID -> Binance OrderID.
-    - `pos:delta:<coin>`: Stores pending size that couldn't be executed immediately.
-    - `exposure:tp:<coin>`: Active Take Profit (Reduce-Only) order ID for a coin.
-    - `orderLock:<oid>`: Short TTL lock to avoid concurrent updates.
+1.  **Event Bus**: Go Channels (`chan events.Event`) transport messages between components.
+2.  **FSM Manager** (`internal/core/fsm/manager.go`): Manages lifecycle of FSM actors.
+3.  **FSM Actor** (`internal/core/fsm/fsm.go`): One Goroutine per Symbol.
+    *   **States**: `Idle`, `PendingOrder`, `Syncing`.
+    *   **Inputs**: HL Order/Fill Events, Binance Execution Reports.
+4.  **Hyperliquid Adapter** (`internal/exchange/hyperliquid`):
+    *   WebSocket Client: Listens for `orderUpdates` and `userFills`.
+    *   HTTP Client: Fetches Account Equity.
+5.  **Binance Adapter** (`internal/exchange/binance`):
+    *   WebSocket User Stream: Listens for `ExecutionReport`.
+    *   API Client: Places orders, fetches equity.
+6.  **Strategy Engine** (`internal/core/strategy`): Calculates position sizes (`Fixed` or `Equal` ratio).
+7.  **Risk Manager** (`internal/core/risk`): Pre-trade checks (Whitelist, Max Position, Emergency Stop).
+8.  **Account Manager** (`internal/core/account`): Maintains real-time equity state.
+9.  **Repository** (`internal/repository`): Redis persistence for:
+    *   Order Mapping (`map:h2b:<oid>`)
+    *   Distributed Locks (`orderLock:<oid>`)
 
-### Key Logic: Dual-Track Reconciliation
-The system maintains consistency using two parallel tracks:
-1. **Fast Path (Incremental)**: Triggered by WS `order`/`fill` events to apply low-latency changes.
-2. **Slow Path (Full Reconciliation)**: Triggered by `OrderValidator` every 60s. Fetches full snapshots from HL and Binance, calculates drift (`Target - Actual`), and realigns if drift > 1%.
-
-### Redis Data Structures
-Understanding Redis keys is crucial for debugging and state management:
-- `map:h2b:<oid>`: String. Mapped Binance Order ID for a given Hyperliquid Order ID.
-- `pos:delta:<coin>`: String (Float). Accumulated position difference. Reset during reconciliation.
-- `orderLock:<oid>`: String (TTL 10s). Distributed lock for updates.
-- `exposure:tp:<coin>`: String. Active Take Profit (Reduce-Only) order ID for a coin.
-- `admin:totp:secret`: String. TOTP secret for admin access. Cleared by `npm run reset-auth`.
+### Data Flow
+1.  **HL WS** receives `Order` event -> `EventBus`.
+2.  **FSM Manager** dispatches event to specific `Symbol FSM`.
+3.  **FSM** calls `AccountManager` for equity -> `Strategy` for size -> `Risk` for validation.
+4.  **FSM** acquires `Redis Lock`.
+5.  **FSM** calls `Binance Client` to place order.
+6.  **FSM** saves mapping to `Redis` and updates State to `Pending`.
 
 ## 4. Agent Workflow Rules
 
-1. **Analyze First**: Inspect `src/` structure and dependencies before editing.
-2. **Mocking is Mandatory**: When creating tests, mock `ioredis`, `binance-api-node`, and external calls.
-   ```javascript
-   const mockRedis = {
-     get: async () => null,
-     set: async () => 'OK',
-     disconnect: () => {}
-   };
-   ```
-3. **Preserve State**: Do not modify `config/default.js` unless explicitly asked.
-4. **One-Way Mode**: The system relies on Binance One-Way Mode only.
-5. **Safety**:
-   - Never log raw API keys or secrets.
-   - Never disable `riskControl` in production code.
-6. **Dashboard Scope**: For frontend commands, work under `dashboard/`.
-7. **Auth & Monitoring**:
-   - Initial access requires TOTP setup via `/api/admin/setup-qr` and `/api/admin/setup`.
-   - Subsequent API/WebSocket access requires a valid JWT (query `token` for WS).
-   - Use `npm run reset-auth` to clear TOTP and re-enter setup mode.
+1.  **Analyze First**: Understand the FSM state transitions before modifying logic.
+2.  **Concurrency Safety**:
+    *   FSMs are single-threaded actors. Do not share mutable state across FSMs without locks.
+    *   Use `sync.RWMutex` for shared components like `AccountManager`.
+3.  **Mocking**: Use interfaces for external dependencies to facilitate testing.
+4.  **Configuration**: Add new config fields to `config.yaml` and `internal/config/structs.go`.
+5.  **Metrics**: Update `pkg/metrics` when adding new critical paths.
 
-## 5. Common Pitfalls to Avoid
-- **Async/Await in Loops**: Avoid `await` in `forEach`. Prefer `for...of` or `Promise.all`.
-- **Redis Keys**: Reuse defined key patterns and constants.
-- **Floating Point Math**: Use helpers in `position-calculator.js` to avoid precision issues.
-- **Error Swallowing**: Always log errors with `logger.error`.
-- **Mode Mismatch**: Do not introduce Binance Hedge Mode logic.
+## 5. Common Pitfalls
+-   **Blocking the Event Loop**: FSM handlers must be fast. Offload heavy IO if necessary (though network IO is async in Go, avoid long sleeps).
+-   **Precision Issues**: Use `shopspring/decimal` for all money/quantity calculations. Never use `float64` for math logic.
+-   **Context Cancellation**: Respect `context.Context` for graceful shutdowns and timeouts.
