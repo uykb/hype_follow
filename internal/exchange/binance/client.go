@@ -1,0 +1,200 @@
+package binance
+
+import (
+	"context"
+	"fmt"
+	"github.com/adshao/go-binance/v2"
+	"github.com/adshao/go-binance/v2/futures"
+	"github.com/uykb/HypeFollow/internal/config"
+	"github.com/uykb/HypeFollow/internal/core/events"
+	"github.com/uykb/HypeFollow/pkg/logger"
+	"go.uber.org/zap"
+	"strconv"
+	"time"
+)
+
+type Client struct {
+	client    *futures.Client
+	eventChan chan<- events.Event
+	done      chan struct{}
+}
+
+func NewClient(eventChan chan<- events.Event) *Client {
+	return &Client{
+		eventChan: eventChan,
+		done:      make(chan struct{}),
+	}
+}
+
+func (c *Client) Init() error {
+	apiKey := config.Cfg.Binance.ApiKey
+	apiSecret := config.Cfg.Binance.ApiSecret
+	useTestnet := config.Cfg.Binance.Testnet
+
+	if useTestnet {
+		futures.UseTestnet = true
+	}
+
+	c.client = binance.NewFuturesClient(apiKey, apiSecret)
+	
+	// Test connectivity
+	err := c.client.NewPingService().Do(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to ping binance: %w", err)
+	}
+	logger.Log.Info("Connected to Binance API", zap.Bool("testnet", useTestnet))
+
+	// Start User Data Stream
+	go c.startUserDataStream()
+
+	return nil
+}
+
+func (c *Client) startUserDataStream() {
+	for {
+		select {
+		case <-c.done:
+			return
+		default:
+		}
+
+		listenKey, err := c.client.NewStartUserStreamService().Do(context.Background())
+		if err != nil {
+			logger.Log.Error("Failed to start user data stream", zap.Error(err))
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		logger.Log.Info("Started Binance User Data Stream", zap.String("listenKey", listenKey))
+
+		// Keep-alive loop
+		stopKeepAlive := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(30 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopKeepAlive:
+					return
+				case <-ticker.C:
+					err := c.client.NewKeepaliveUserStreamService().ListenKey(listenKey).Do(context.Background())
+					if err != nil {
+						logger.Log.Error("Failed to keep alive user stream", zap.Error(err))
+					}
+				}
+			}
+		}()
+
+		// WebSocket Handler
+		doneC, stopC, err := futures.WsUserDataServe(listenKey, c.handleUserData, c.handleWSError)
+		if err != nil {
+			logger.Log.Error("Failed to connect to user stream WS", zap.Error(err))
+			close(stopKeepAlive)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		// Wait for disconnect
+		select {
+		case <-doneC:
+			logger.Log.Warn("Binance User Stream disconnected")
+		case <-c.done:
+			stopC <- struct{}{}
+			close(stopKeepAlive)
+			return
+		}
+		close(stopKeepAlive)
+	}
+}
+
+func (c *Client) handleUserData(event *futures.WsUserDataEvent) {
+	if event.Event == futures.UserDataEventTypeOrderTradeUpdate {
+		o := event.OrderTradeUpdate
+		
+		price, _ := strconv.ParseFloat(o.OriginalPrice, 64)
+		qty, _ := strconv.ParseFloat(o.OriginalQty, 64)
+
+		evt := events.Event{
+			Type:      events.EvtBinanceExecutionReport,
+			Timestamp: time.Unix(event.Time/1000, 0),
+			Symbol:    o.Symbol,
+			Payload: events.BinanceExecutionPayload{
+				Symbol:        o.Symbol,
+				ClientOrderID: o.ClientOrderID,
+				Side:          string(o.Side),
+				OrderType:     string(o.Type),
+				Quantity:      qty,
+				Price:         price,
+				ExecutionType: string(o.ExecutionType),
+				OrderStatus:   string(o.Status),
+			},
+		}
+		c.eventChan <- evt
+	}
+}
+
+func (c *Client) handleWSError(err error) {
+	logger.Log.Error("Binance WS Error", zap.Error(err))
+}
+
+// Public API methods for Executor
+
+func (c *Client) PlaceOrder(ctx context.Context, symbol string, side futures.SideType, quantity, price float64, reduceOnly bool) (*futures.CreateOrderResponse, error) {
+	service := c.client.NewCreateOrderService().
+		Symbol(symbol).
+		Side(side).
+		Type(futures.OrderTypeLimit).
+		TimeInForce(futures.TimeInForceTypeGTC).
+		Quantity(fmt.Sprintf("%f", quantity)).
+		Price(fmt.Sprintf("%f", price))
+
+	if reduceOnly {
+		service.ReduceOnly(true)
+	}
+
+	return service.Do(ctx)
+}
+
+func (c *Client) PlaceMarketOrder(ctx context.Context, symbol string, side futures.SideType, quantity float64, reduceOnly bool) (*futures.CreateOrderResponse, error) {
+	service := c.client.NewCreateOrderService().
+		Symbol(symbol).
+		Side(side).
+		Type(futures.OrderTypeMarket).
+		Quantity(fmt.Sprintf("%f", quantity))
+	
+	if reduceOnly {
+		service.ReduceOnly(true)
+	}
+
+	return service.Do(ctx)
+}
+
+func (c *Client) CancelOrder(ctx context.Context, symbol string, orderID int64) error {
+	_, err := c.client.NewCancelOrderService().
+		Symbol(symbol).
+		OrderID(orderID).
+		Do(ctx)
+	return err
+}
+
+func (c *Client) GetPositions(ctx context.Context) ([]*futures.AccountPosition, error) {
+	res, err := c.client.NewGetAccountService().Do(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return res.Positions, nil
+}
+
+func (c *Client) GetAccountEquity(ctx context.Context) (float64, error) {
+	res, err := c.client.NewGetAccountService().Do(ctx)
+	if err != nil {
+		return 0, err
+	}
+	
+	// TotalMarginBalance is usually the equity (Wallet Balance + Unrealized PnL)
+	return strconv.ParseFloat(res.TotalMarginBalance, 64)
+}
+
+func (c *Client) Stop() {
+	close(c.done)
+}

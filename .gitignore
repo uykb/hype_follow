@@ -1,3 +1,4 @@
+
 node_modules/
 .env
 dist/
@@ -6,3 +7,5 @@ dashboard/dist/
 .DS_Store
 *.log
 config/local.js
+bin/
+config.yaml

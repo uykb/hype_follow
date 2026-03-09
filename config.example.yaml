@@ -1,0 +1,35 @@
+app:
+  log_level: "info"
+  env: "development"
+
+binance:
+  api_key: "YOUR_BINANCE_API_KEY"
+  api_secret: "YOUR_BINANCE_API_SECRET"
+  testnet: true
+
+hyperliquid:
+  account_address: "0x..."
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+
+trading:
+  mode: "fixed"
+  fixed_ratio: 0.1
+  equal_ratio: 1.0
+  min_order_size:
+    BTC: 0.001
+    ETH: 0.01
+
+risk_control:
+  supported_coins:
+    - "BTC"
+    - "ETH"
+    - "SOL"
+  max_position_size:
+    BTC: 1.0
+    ETH: 10.0
+  emergency_stop: false
