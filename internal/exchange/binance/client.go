@@ -140,13 +140,23 @@ func (c *Client) handleWSError(err error) {
 // Public API methods for Executor
 
 func (c *Client) PlaceOrder(ctx context.Context, symbol string, side futures.SideType, quantity, price float64, reduceOnly bool) (*futures.CreateOrderResponse, error) {
+	// Format Price (3 decimal places for HYPEUSDT) and Quantity (2 decimal places)
+	var priceStr, qtyStr string
+	if symbol == "HYPEUSDT" {
+		priceStr = fmt.Sprintf("%.3f", price)
+		qtyStr = fmt.Sprintf("%.2f", quantity)
+	} else {
+		priceStr = fmt.Sprintf("%f", price)
+		qtyStr = fmt.Sprintf("%f", quantity)
+	}
+
 	service := c.client.NewCreateOrderService().
 		Symbol(symbol).
 		Side(side).
 		Type(futures.OrderTypeLimit).
 		TimeInForce(futures.TimeInForceTypeGTC).
-		Quantity(fmt.Sprintf("%f", quantity)).
-		Price(fmt.Sprintf("%f", price))
+		Quantity(qtyStr).
+		Price(priceStr)
 
 	if reduceOnly {
 		service.ReduceOnly(true)
@@ -156,11 +166,18 @@ func (c *Client) PlaceOrder(ctx context.Context, symbol string, side futures.Sid
 }
 
 func (c *Client) PlaceMarketOrder(ctx context.Context, symbol string, side futures.SideType, quantity float64, reduceOnly bool) (*futures.CreateOrderResponse, error) {
+	var qtyStr string
+	if symbol == "HYPEUSDT" {
+		qtyStr = fmt.Sprintf("%.2f", quantity)
+	} else {
+		qtyStr = fmt.Sprintf("%f", quantity)
+	}
+
 	service := c.client.NewCreateOrderService().
 		Symbol(symbol).
 		Side(side).
 		Type(futures.OrderTypeMarket).
-		Quantity(fmt.Sprintf("%f", quantity))
+		Quantity(qtyStr)
 	
 	if reduceOnly {
 		service.ReduceOnly(true)

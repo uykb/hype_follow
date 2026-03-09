@@ -166,6 +166,12 @@ func (c *Client) processOrderUpdates(data []byte) {
 
 	for _, update := range updates {
 		order := update.Order
+		
+		// Optimization: Filter for HYPE coin only
+		if order.Coin != "HYPE" {
+			continue
+		}
+
 		price, _ := strconv.ParseFloat(order.LimitPx, 64)
 		size, _ := strconv.ParseFloat(order.Sz, 64)
 		
@@ -201,6 +207,12 @@ func (c *Client) processUserFills(data []byte) {
 		if !fill.Crossed {
 			continue
 		}
+		
+		// Optimization: Filter for HYPE coin only
+		if fill.Coin != "HYPE" {
+			continue
+		}
+
 		price, _ := strconv.ParseFloat(fill.Px, 64)
 		size, _ := strconv.ParseFloat(fill.Sz, 64)
 

@@ -8,7 +8,7 @@ binance:
   testnet: true
 
 hyperliquid:
-  account_address: "0x..."
+  account_address: "0xdc899ed4a80e7bbe7c86307715507c828901f196"
 
 redis:
   host: "localhost"
@@ -21,15 +21,11 @@ trading:
   fixed_ratio: 0.1
   equal_ratio: 1.0
   min_order_size:
-    BTC: 0.001
-    ETH: 0.01
+    HYPEUSDT: 0.5
 
 risk_control:
   supported_coins:
-    - "BTC"
-    - "ETH"
-    - "SOL"
+    - "HYPEUSDT"
   max_position_size:
-    BTC: 1.0
-    ETH: 10.0
+    HYPEUSDT: 10000.0
   emergency_stop: false

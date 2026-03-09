@@ -52,6 +52,12 @@ func (c *Calculator) CalculateQuantity(symbol string, masterSize float64, master
 
 	// Check Minimum Size
 	if minSize, ok := c.MinOrderSizes[symbol]; ok {
+		// Optimization: Check min notional (value) for HYPEUSDT
+		// Min notional is 5 USDT. We need price to calculate notional.
+		// Since we don't have price here, we rely on min quantity config.
+		// If HYPE price is approx 12 USDT, 0.5 HYPE = 6 USDT > 5 USDT.
+		// So setting MinOrderSize for HYPEUSDT to 0.5 in config is safer.
+		
 		if finalSize.LessThan(minSize) {
 			logger.Log.Warn("Calculated size below minimum, using minimum", 
 				zap.String("symbol", symbol), 
@@ -63,7 +69,12 @@ func (c *Calculator) CalculateQuantity(symbol string, masterSize float64, master
 
 	// Precision handling (simplified to 3 decimal places for now, should use exchange info)
 	// In a real app, you'd fetch LOT_SIZE filter from Binance ExchangeInfo
-	finalSize = finalSize.Round(3)
+	// HYPEUSDT usually has 2 decimal place for quantity on Binance (e.g. 12.34 HYPE)
+	if symbol == "HYPEUSDT" {
+		finalSize = finalSize.Round(2)
+	} else {
+		finalSize = finalSize.Round(3)
+	}
 
 	f, _ := finalSize.Float64()
 	return f
