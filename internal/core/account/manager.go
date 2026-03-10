@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"fmt"
 	"github.com/uykb/HypeFollow/internal/config"
 	"github.com/uykb/HypeFollow/internal/exchange/binance"
 	"github.com/uykb/HypeFollow/internal/exchange/hyperliquid"
@@ -98,4 +99,20 @@ func (m *Manager) GetEquities() (float64, float64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.binanceEquity, m.hlEquity
+}
+
+func (m *Manager) GetHLState() (*hyperliquid.ClearinghouseStateResponse, error) {
+	addr := config.Cfg.Hyperliquid.AccountAddress
+	if addr == "" {
+		return nil, fmt.Errorf("no HL address configured")
+	}
+	return m.hlCli.GetClearinghouseState(addr)
+}
+
+func (m *Manager) GetHLOpenOrders() ([]hyperliquid.OrderDetail, error) {
+	addr := config.Cfg.Hyperliquid.AccountAddress
+	if addr == "" {
+		return nil, fmt.Errorf("no HL address configured")
+	}
+	return m.hlCli.GetOpenOrders(addr)
 }

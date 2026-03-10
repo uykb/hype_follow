@@ -194,6 +194,13 @@ func (c *Client) CancelOrder(ctx context.Context, symbol string, orderID int64) 
 	return err
 }
 
+func (c *Client) CancelAllOpenOrders(ctx context.Context, symbol string) error {
+	err := c.client.NewCancelAllOpenOrdersService().
+		Symbol(symbol).
+		Do(ctx)
+	return err
+}
+
 func (c *Client) GetPositions(ctx context.Context) ([]*futures.AccountPosition, error) {
 	res, err := c.client.NewGetAccountService().Do(ctx)
 	if err != nil {

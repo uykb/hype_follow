@@ -12,6 +12,7 @@ import (
 	"github.com/uykb/HypeFollow/pkg/logger"
 	"github.com/uykb/HypeFollow/pkg/metrics"
 	"go.uber.org/zap"
+	"math"
 	"strconv"
 	"time"
 )
@@ -82,16 +83,24 @@ func (f *FSM) handleEvent(evt events.Event) {
 			f.handleHLOrderCancel(evt)
 		case events.EvtHLFill:
 			f.handleHLFill(evt)
+		case events.EvtSmartSyncCheck:
+			f.handleSmartSyncCheck(evt)
 		}
 	case StatePendingOrder:
 		switch evt.Type {
 		case events.EvtBinanceExecutionReport:
 			f.handleBinanceExecution(evt)
 		}
+	case StateSyncing:
+		// While syncing, we might ignore or buffer events
 	}
 }
 
 func (f *FSM) handleHLOrder(evt events.Event) {
+	if f.CurrentState == StateSyncing {
+		logger.Log.Debug("Ignoring HL Order during Syncing", zap.String("oid", evt.Payload.(events.HLOrderPayload).OrderID))
+		return
+	}
 	metrics.HLEvents.WithLabelValues("order").Inc()
 	payload, ok := evt.Payload.(events.HLOrderPayload)
 	if !ok {
@@ -231,10 +240,145 @@ func (f *FSM) handleBinanceExecution(evt events.Event) {
 			f.CurrentPosition -= payload.Quantity
 		}
 		logger.Log.Info("Position Updated via Binance Execution", zap.Float64("new_pos", f.CurrentPosition))
+		
+		// Trigger smart sync logic after position change
+		isTP := math.Abs(f.CurrentPosition) < 0.0001
+		go func() {
+			time.Sleep(5 * time.Second)
+			f.InputChan <- events.Event{
+				Type:      events.EvtSmartSyncCheck,
+				Symbol:    f.Symbol,
+				Timestamp: time.Now(),
+				Payload:   events.SmartSyncPayload{IsTP: isTP},
+			}
+		}()
 	}
 
 	// Update state based on execution
 	f.CurrentState = StateIdle
+}
+
+func (f *FSM) handleSmartSyncCheck(evt events.Event) {
+	payload := evt.Payload.(events.SmartSyncPayload)
+	isTP := payload.IsTP
+	cycle := payload.Cycle
+
+	logger.Log.Info("Running Smart Sync Check", zap.Bool("isTP", isTP), zap.Int("cycle", cycle))
+
+	hlState, err := f.AccountMgr.GetHLState()
+	if err != nil {
+		logger.Log.Error("SmartSync: Failed to get HL state", zap.Error(err))
+		return
+	}
+
+	var hlPos float64
+	for _, p := range hlState.AssetPositions {
+		if p.Position.Coin == f.Symbol {
+			hlPos, _ = strconv.ParseFloat(p.Position.Szi, 64)
+			break
+		}
+	}
+
+	if isTP {
+		// TP Logic: Must wait until HL position appears (non-zero)
+		if math.Abs(hlPos) < 0.0001 {
+			logger.Log.Info("SmartSync(TP): HL still has no position, retrying in 5s")
+			// Schedule next check
+			time.AfterFunc(5*time.Second, func() {
+				f.InputChan <- events.Event{
+					Type:      events.EvtSmartSyncCheck,
+					Symbol:    f.Symbol,
+					Timestamp: time.Now(),
+					Payload:   events.SmartSyncPayload{IsTP: true, Cycle: cycle + 1},
+				}
+			})
+			return
+		}
+		// Found HL position, perform full sync
+		f.performFullSync(hlPos)
+	} else {
+		// Position Change Logic:
+		// If cycle == 0, just wait 5s.
+		if cycle == 0 {
+			time.AfterFunc(5*time.Second, func() {
+				f.InputChan <- events.Event{
+					Type:      events.EvtSmartSyncCheck,
+					Symbol:    f.Symbol,
+					Timestamp: time.Now(),
+					Payload:   events.SmartSyncPayload{IsTP: false, Cycle: 1},
+				}
+			})
+			return
+		}
+		
+		// Cycle >= 1: Perform sync
+		f.performFullSync(hlPos)
+	}
+}
+
+func (f *FSM) performFullSync(hlPos float64) {
+	f.CurrentState = StateSyncing
+	defer func() { f.CurrentState = StateIdle }()
+
+	logger.Log.Info("Performing Full Sync with HL", zap.Float64("hlPos", hlPos))
+	
+	// 1. Sync Position via Market Order if needed
+	diff := hlPos - f.CurrentPosition
+	if math.Abs(diff) > 0.0001 {
+		var side futures.SideType
+		if diff > 0 {
+			side = futures.SideTypeBuy
+		} else {
+			side = futures.SideTypeSell
+		}
+		
+		logger.Log.Info("Syncing Position via Market Order", zap.Float64("diff", diff))
+		_, err := f.BinanceCli.PlaceMarketOrder(context.Background(), f.Symbol+"USDT", side, math.Abs(diff), false)
+		if err != nil {
+			logger.Log.Error("Failed to sync position via market order", zap.Error(err))
+		}
+		// Note: Do NOT update f.CurrentPosition here. 
+		// Wait for ExecutionReport to avoid double counting.
+	}
+
+	// 2. Sync Limit Orders
+	hlOrders, err := f.AccountMgr.GetHLOpenOrders()
+	if err != nil {
+		logger.Log.Error("Failed to get HL open orders", zap.Error(err))
+		return
+	}
+
+	// Cancel all existing Binance orders first
+	err = f.BinanceCli.CancelAllOpenOrders(context.Background(), f.Symbol+"USDT")
+	if err != nil {
+		logger.Log.Error("Failed to cancel all open orders", zap.Error(err))
+	}
+
+	// Re-replicate all HL orders
+	for _, o := range hlOrders {
+		if o.Coin != f.Symbol {
+			continue
+		}
+		
+		price, _ := strconv.ParseFloat(o.LimitPx, 64)
+		size, _ := strconv.ParseFloat(o.Sz, 64)
+		
+		var side futures.SideType
+		if o.Side == "B" {
+			side = futures.SideTypeBuy
+		} else {
+			side = futures.SideTypeSell
+		}
+
+		// Execute in parallel (non-blocking) or sequential?
+		// Sequential is safer for rate limits.
+		_, err := f.BinanceCli.PlaceOrder(context.Background(), f.Symbol+"USDT", side, size, price, o.ReduceOnly)
+		if err != nil {
+			logger.Log.Error("Failed to replicate order during sync", zap.Error(err))
+		}
+	}
+	
+	logger.Log.Info("Full Sync Completed")
 }
 
 func (f *FSM) syncPosition() {

@@ -17,6 +17,7 @@ const (
 
 	// System Events
 	EvtSyncTimer
+	EvtSmartSyncCheck
 )
 
 type Event struct {
@@ -24,6 +25,11 @@ type Event struct {
 	Timestamp time.Time
 	Symbol    string
 	Payload   interface{}
+}
+
+type SmartSyncPayload struct {
+	IsTP  bool
+	Cycle int
 }
 
 // Payload definitions

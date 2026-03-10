@@ -7,6 +7,25 @@ type WSMessage struct {
 	Data    json.RawMessage `json:"data"`
 }
 
+type ClearinghouseStateResponse struct {
+	AssetPositions []AssetPosition `json:"assetPositions"`
+	MarginSummary  MarginSummary   `json:"marginSummary"`
+}
+
+type AssetPosition struct {
+	Position PositionDetails `json:"position"`
+	Type     string          `json:"type"` // "oneWay"
+}
+
+type PositionDetails struct {
+	Coin           string `json:"coin"`
+	Szi            string `json:"szi"` // Size
+	EntryPx        string `json:"entryPx"`
+	PositionValue  string `json:"positionValue"`
+	ReturnOnEquity string `json:"returnOnEquity"`
+	UnrealizedPnl  string `json:"unrealizedPnl"`
+}
+
 type OrderUpdateData []OrderUpdateEvent
 
 type OrderUpdateEvent struct {
