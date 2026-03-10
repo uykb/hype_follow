@@ -16,7 +16,6 @@ module.exports = {
     wsUrl: process.env.HYPERLIQUID_WS_URL || 'wss://api.hyperliquid.xyz/ws',
     // List of "Smart Money" UIDs to follow
     followedUsers: [
-      '0xdae4df7207feb3b350e4284c8efe5f7dac37f637',
       '0xdc899ed4a80e7bbe7c86307715507c828901f196'
     ]
   },
