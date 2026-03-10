@@ -26,19 +26,13 @@ module.exports = {
   },
   riskControl: {
     // Whitelist of supported coins
-    supportedCoins: ['BTC', 'ETH', 'SOL', 'HYPE'],
+    supportedCoins: ['HYPE'],
     // Max position size limits (not implemented in MVP but placeholder)
     maxPositionSize: {
-      BTC: 0.1,
-      ETH: 2.0,
-      SOL: 20.0,
       HYPE: 1000.0 // Add max position size for HYPE
     },
     // Threshold for aggressive risk reduction (reduce half)
     reductionThreshold: {
-      BTC: 0.015,
-      ETH: 0.2,
-      SOL: 5,
       HYPE: 100.0 // Add threshold for HYPE
     }
   },
@@ -54,9 +48,6 @@ module.exports = {
 
     // Maximum position size to prevent liquidation risk
     maxPositionSize: {
-      BTC: 0.5,
-      ETH: 5,
-      SOL: 50,
       HYPE: 100.0 // Maximum 100 HYPE
     },
 
@@ -68,9 +59,6 @@ module.exports = {
 
     // Min order sizes (static config - to be enhanced with API data if needed)
     minOrderSize: {
-      BTC: 0.002,
-      ETH: 0.007,
-      SOL: 0.04,
       HYPE: 1.0 // Minimum order size for HYPE
     },
 
