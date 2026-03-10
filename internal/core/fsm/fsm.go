@@ -39,6 +39,7 @@ type FSM struct {
 	CurrentPosition float64
 	PendingOrderID  string
 	LastTPOrderID   string // Track the last TP order ID to prevent duplicates
+	DeferredEvents  []events.Event
 }
 
 func NewFSM(symbol string, cli *binance.Client, strat *strategy.Calculator, risk *risk.RiskManager, repo *repository.RedisRepo, acct *account.Manager) *FSM {
@@ -50,6 +51,7 @@ func NewFSM(symbol string, cli *binance.Client, strat *strategy.Calculator, risk
 		Risk:       risk,
 		Repo:       repo,
 		AccountMgr: acct,
+		DeferredEvents: make([]events.Event, 0),
 	}
 }
 
@@ -60,6 +62,15 @@ func (f *FSM) Run(ctx context.Context) {
 	f.syncPosition()
 
 	for {
+		// Process deferred events if we are Idle
+		if f.CurrentState == StateIdle && len(f.DeferredEvents) > 0 {
+			evt := f.DeferredEvents[0]
+			f.DeferredEvents = f.DeferredEvents[1:]
+			logger.Log.Debug("Processing Deferred Event", zap.Any("type", evt.Type))
+			f.handleEvent(evt)
+			continue
+		}
+
 		select {
 		case <-ctx.Done():
 			return
@@ -91,9 +102,17 @@ func (f *FSM) handleEvent(evt events.Event) {
 		switch evt.Type {
 		case events.EvtBinanceExecutionReport:
 			f.handleBinanceExecution(evt)
+		case events.EvtHLOrder, events.EvtHLOrderCancel, events.EvtHLFill, events.EvtSmartSyncCheck:
+			logger.Log.Info("Deferring event during PendingOrder", zap.Any("type", evt.Type))
+			f.DeferredEvents = append(f.DeferredEvents, evt)
 		}
 	case StateSyncing:
 		// While syncing, we might ignore or buffer events
+		// For now, let's defer them too if they are critical
+		if evt.Type == events.EvtHLOrder || evt.Type == events.EvtHLOrderCancel {
+			logger.Log.Info("Deferring event during Syncing", zap.Any("type", evt.Type))
+			f.DeferredEvents = append(f.DeferredEvents, evt)
+		}
 	}
 }
 
