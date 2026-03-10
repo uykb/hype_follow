@@ -38,6 +38,7 @@ type FSM struct {
 	// Local State
 	CurrentPosition float64
 	PendingOrderID  string
+	LastTPOrderID   string // Track the last TP order ID to prevent duplicates
 }
 
 func NewFSM(symbol string, cli *binance.Client, strat *strategy.Calculator, risk *risk.RiskManager, repo *repository.RedisRepo, acct *account.Manager) *FSM {
@@ -134,6 +135,18 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 			logger.Log.Warn("Received ReduceOnly order but current position is 0", zap.String("oid", payload.OrderID))
 			return
 		}
+
+		// Prevent duplicate TP orders: If we already have a TP order, cancel it first
+		if f.LastTPOrderID != "" {
+			logger.Log.Info("Cancelling previous TP order before placing new one", zap.String("old_tp_oid", f.LastTPOrderID))
+			// Best effort cancellation
+			ctxCancel, cancelCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			oid, _ := strconv.ParseInt(f.LastTPOrderID, 10, 64)
+			_ = f.BinanceCli.CancelOrder(ctxCancel, binanceSymbol, oid)
+			cancelCancel()
+			f.LastTPOrderID = ""
+		}
+
 		quantity = currentPos
 		logger.Log.Info("Syncing TP Order Size to Current Position", zap.Float64("qty", quantity))
 	} else {
@@ -179,6 +192,10 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 	f.PendingOrderID = strconv.FormatInt(resp.OrderID, 10)
 	f.CurrentState = StatePendingOrder
 	metrics.OrderPlaced.WithLabelValues(binanceSymbol, string(side)).Inc()
+
+	if payload.IsReduceOnly {
+		f.LastTPOrderID = f.PendingOrderID
+	}
 	
 	// 7. Save Mapping
 	go func() {
@@ -215,6 +232,11 @@ func (f *FSM) handleHLOrderCancel(evt events.Event) {
 	if err != nil {
 		logger.Log.Error("Failed to cancel Binance order", zap.Error(err))
 		return
+	}
+	
+	// If the cancelled order was our tracked TP, clear it
+	if strconv.FormatInt(binanceOID, 10) == f.LastTPOrderID {
+		f.LastTPOrderID = ""
 	}
 	
 	metrics.OrderCancelled.WithLabelValues(binanceSymbol).Inc()
@@ -366,6 +388,9 @@ func (f *FSM) performFullSync(hlPos float64) {
 	}
 
 	// Re-replicate all HL orders
+	var hasTP bool
+	var tpPrice float64 // Use the price from one of the TP orders (or last one)
+	
 	for _, o := range hlOrders {
 		if o.Coin != f.Symbol {
 			continue
@@ -381,11 +406,46 @@ func (f *FSM) performFullSync(hlPos float64) {
 			side = futures.SideTypeSell
 		}
 
+		// Consolidate TP Orders (ReduceOnly)
+		if o.ReduceOnly {
+			hasTP = true
+			tpPrice = price // Take price from HL order
+			continue
+		}
+
 		// Execute in parallel (non-blocking) or sequential?
 		// Sequential is safer for rate limits.
 		_, err := f.BinanceCli.PlaceOrder(context.Background(), f.Symbol+"USDT", side, size, price, o.ReduceOnly)
 		if err != nil {
 			logger.Log.Error("Failed to replicate order during sync", zap.Error(err))
+		}
+	}
+	
+	// Place Consolidated TP Order if needed
+	if hasTP {
+		targetPos := math.Abs(hlPos)
+		if targetPos > 0 {
+			// Determine side based on position
+			var tpSide futures.SideType
+			if hlPos > 0 {
+				tpSide = futures.SideTypeSell
+			} else {
+				tpSide = futures.SideTypeBuy
+			}
+			
+			logger.Log.Info("Placing Consolidated TP Order during Sync", 
+				zap.Float64("qty", targetPos), 
+				zap.Float64("price", tpPrice))
+				
+			resp, err := f.BinanceCli.PlaceOrder(context.Background(), f.Symbol+"USDT", tpSide, targetPos, tpPrice, true)
+			if err != nil {
+				logger.Log.Error("Failed to place consolidated TP order", zap.Error(err))
+			} else {
+				f.LastTPOrderID = strconv.FormatInt(resp.OrderID, 10)
+				// We don't need to save mapping here as this is a consolidated order, 
+				// but saving it might be useful for cancellation if we map "Synthetic HL ID" -> Binance ID.
+				// For now, we rely on LastTPOrderID for management.
+			}
 		}
 	}
 	
