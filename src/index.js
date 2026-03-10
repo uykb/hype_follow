@@ -125,6 +125,40 @@ async function main() {
     startServer();
   }
 
+  // 1b. Wait for Redis Connection
+  logger.info('Waiting for Redis connection...');
+  try {
+    await new Promise((resolve, reject) => {
+      if (redis.status === 'ready') {
+        return resolve();
+      }
+
+      const onConnect = () => {
+        cleanup();
+        resolve();
+      };
+      
+      const onError = (err) => {
+        // Just log, don't reject, let retryStrategy handle it
+        logger.warn('Redis connection retry...', err.message);
+      };
+
+      const cleanup = () => {
+        redis.removeListener('ready', onConnect);
+        redis.removeListener('error', onError);
+      };
+
+      redis.once('ready', onConnect);
+      redis.on('error', onError);
+      
+      // Optional: Timeout if needed, but we rely on retryStrategy for now
+    });
+    logger.info('✅ Redis connected successfully');
+  } catch (err) {
+    logger.error('❌ Redis connection failed fatal', err);
+    process.exit(1);
+  }
+
   // 2. Initialize Position Tracker
   // We initialize based on the first followed user (MVP limitation: single user tracking mostly)
   const followedUsers = config.get('hyperliquid.followedUsers');
