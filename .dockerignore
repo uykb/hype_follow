@@ -3,8 +3,13 @@ npm-debug.log
 .env
 .git
 .gitignore
-dashboard/node_modules
-README.md
-Dockerfile
 .github
 tests
+README.md
+Dockerfile
+docker-compose.yml
+
+# Dashboard
+dashboard/node_modules
+dashboard/dist
+dashboard/.env

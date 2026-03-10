@@ -1,35 +1,32 @@
-FROM node:20-slim
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app
+COPY dashboard/package*.json ./dashboard/
+RUN cd dashboard && npm ci
+COPY dashboard/ ./dashboard/
+RUN cd dashboard && npm run build
 
-# Install Redis
-RUN apt-get update && \
-    apt-get install -y redis-server && \
-    rm -rf /var/lib/apt/lists/*
-
+FROM node:20-alpine
 WORKDIR /app
 
-COPY package*.json ./
-
 # Install production dependencies
+COPY package*.json ./
 RUN npm ci --only=production
 
-# Copy application source
+# Copy built frontend from builder stage
+COPY --from=frontend-builder /app/dashboard/dist ./dashboard/dist
+
+# Copy backend source code
 COPY src/ ./src/
 COPY config/ ./config/
-COPY dashboard/dist/ ./dashboard/dist/
-
-# Copy and setup entrypoint script
-COPY docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Environment variables
 ENV NODE_ENV=production
 ENV MONITORING_PORT=49618
-# Force Redis to use localhost since it's now in the same container
-ENV REDIS_HOST=127.0.0.1
+ENV REDIS_HOST=redis
 ENV REDIS_PORT=6379
-ENV BINANCE_TESTNET=false
 
 EXPOSE 49618
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+USER node
+
 CMD ["node", "src/index.js"]

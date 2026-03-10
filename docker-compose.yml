@@ -6,12 +6,27 @@ services:
     restart: always
     env_file: .env
     environment:
-      - REDIS_HOST=127.0.0.1
+      - NODE_ENV=production
+      - REDIS_HOST=redis
       - REDIS_PORT=6379
     ports:
       - "49618:49618"
+    depends_on:
+      - redis
+    networks:
+      - app_net
+
+  redis:
+    image: redis:alpine
+    restart: always
+    command: redis-server --appendonly yes
     volumes:
-      - redis_data:/var/lib/redis
+      - redis_data:/data
+    networks:
+      - app_net
 
 volumes:
   redis_data:
+
+networks:
+  app_net:
