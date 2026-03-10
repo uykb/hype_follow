@@ -249,7 +249,7 @@ func (f *FSM) handleBinanceExecution(evt events.Event) {
 				Type:      events.EvtSmartSyncCheck,
 				Symbol:    f.Symbol,
 				Timestamp: time.Now(),
-				Payload:   events.SmartSyncPayload{IsTP: isTP},
+				Payload:   events.SmartSyncPayload{IsTP: isTP, Cycle: 0},
 			}
 		}()
 	}
@@ -282,7 +282,17 @@ func (f *FSM) handleSmartSyncCheck(evt events.Event) {
 	if isTP {
 		// TP Logic: Must wait until HL position appears (non-zero)
 		if math.Abs(hlPos) < 0.0001 {
-			logger.Log.Info("SmartSync(TP): HL still has no position, retrying in 5s")
+			logger.Log.Info("SmartSync(TP): HL still has no position, retrying in 5s", zap.Int("cycle", cycle))
+			
+			// *** Fix: Cancel all Binance orders while waiting for HL to re-open ***
+			// This ensures no residual orders are left from the previous grid
+			if cycle == 0 {
+				logger.Log.Info("SmartSync(TP): Cancelling all Binance orders while waiting for HL")
+				if err := f.BinanceCli.CancelAllOpenOrders(context.Background(), f.Symbol+"USDT"); err != nil {
+					logger.Log.Error("Failed to cancel orders during TP wait", zap.Error(err))
+				}
+			}
+
 			// Schedule next check
 			time.AfterFunc(5*time.Second, func() {
 				f.InputChan <- events.Event{
@@ -294,6 +304,7 @@ func (f *FSM) handleSmartSyncCheck(evt events.Event) {
 			})
 			return
 		}
+		logger.Log.Info("SmartSync(TP): HL position detected, performing full sync", zap.Float64("hlPos", hlPos))
 		// Found HL position, perform full sync
 		f.performFullSync(hlPos)
 	} else {
