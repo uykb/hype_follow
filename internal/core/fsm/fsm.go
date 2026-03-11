@@ -265,7 +265,18 @@ func (f *FSM) handleHLFill(evt events.Event) {
 	// Logic for fills (Market Replication)
 	// Do not update position here to avoid double counting or drift.
 	// Position is updated via Binance Execution Reports.
-	logger.Log.Info("HL Fill Received (Logging Only)", zap.String("symbol", f.Symbol))
+	logger.Log.Info("HL Fill Received, scheduling SmartSync", zap.String("symbol", f.Symbol))
+
+	// Trigger SmartSync to ensure we catch the position change
+	// Use a delay to allow HL API to update
+	time.AfterFunc(2*time.Second, func() {
+		f.InputChan <- events.Event{
+			Type:      events.EvtSmartSyncCheck,
+			Symbol:    f.Symbol,
+			Timestamp: time.Now(),
+			Payload:   events.SmartSyncPayload{IsTP: false, Cycle: 1}, // Cycle 1 to sync immediately
+		}
+	})
 }
 
 func (f *FSM) handleBinanceExecution(evt events.Event) {
@@ -373,8 +384,24 @@ func (f *FSM) performFullSync(hlPos float64) {
 	defer func() { f.CurrentState = StateIdle }()
 
 	logger.Log.Info("Performing Full Sync with HL", zap.Float64("hlPos", hlPos))
-	
-	// 1. Sync Position via Market Order if needed
+
+	// 1. Fetch HL Open Orders FIRST (Network Call)
+	// We do this before cancelling to minimize the "naked" time
+	hlOrders, err := f.AccountMgr.GetHLOpenOrders()
+	if err != nil {
+		logger.Log.Error("Failed to get HL open orders", zap.Error(err))
+		return
+	}
+
+	// 2. Cancel all existing Binance orders
+	// This ensures we have a clean slate and don't double-order.
+	// Crucially, we do this BEFORE placing the Market Order to avoid cancelling it.
+	err = f.BinanceCli.CancelAllOpenOrders(context.Background(), f.Symbol+"USDT")
+	if err != nil {
+		logger.Log.Error("Failed to cancel all open orders", zap.Error(err))
+	}
+
+	// 3. Sync Position via Market Order if needed
 	diff := hlPos - f.CurrentPosition
 	if math.Abs(diff) > 0.0001 {
 		var side futures.SideType
@@ -383,29 +410,17 @@ func (f *FSM) performFullSync(hlPos float64) {
 		} else {
 			side = futures.SideTypeSell
 		}
-		
+
 		logger.Log.Info("Syncing Position via Market Order", zap.Float64("diff", diff))
 		_, err := f.BinanceCli.PlaceMarketOrder(context.Background(), f.Symbol+"USDT", side, math.Abs(diff), false)
 		if err != nil {
 			logger.Log.Error("Failed to sync position via market order", zap.Error(err))
 		}
-		// Note: Do NOT update f.CurrentPosition here. 
+		// Note: Do NOT update f.CurrentPosition here.
 		// Wait for ExecutionReport to avoid double counting.
 	}
 
-	// 2. Sync Limit Orders
-	hlOrders, err := f.AccountMgr.GetHLOpenOrders()
-	if err != nil {
-		logger.Log.Error("Failed to get HL open orders", zap.Error(err))
-		return
-	}
-
-	// Cancel all existing Binance orders first
-	err = f.BinanceCli.CancelAllOpenOrders(context.Background(), f.Symbol+"USDT")
-	if err != nil {
-		logger.Log.Error("Failed to cancel all open orders", zap.Error(err))
-	}
-
+	// 4. Sync Limit Orders
 	// Re-replicate all HL orders
 	var hasTP bool
 	var tpPrice float64 // Use the price from one of the TP orders (or last one)
