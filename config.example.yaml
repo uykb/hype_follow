@@ -22,6 +22,8 @@ trading:
   equal_ratio: 1.0
   min_order_size:
     HYPEUSDT: 0.5
+  long_only: true
+  tp_use_market: true
 
 risk_control:
   supported_coins:
@@ -29,3 +31,5 @@ risk_control:
   max_position_size:
     HYPEUSDT: 10000.0
   emergency_stop: false
+  max_smart_sync_cycles: 12
+  tp_desync_check_interval: 10

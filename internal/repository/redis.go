@@ -54,6 +54,25 @@ func (r *RedisRepo) AcquireLock(ctx context.Context, oid string, ttl time.Durati
 	return r.client.SetNX(ctx, key, "1", ttl).Result()
 }
 
+func (r *RedisRepo) SaveTPOrderID(ctx context.Context, symbol, orderID string) error {
+	key := fmt.Sprintf("tp:order:%s", symbol)
+	return r.client.Set(ctx, key, orderID, 0).Err()
+}
+
+func (r *RedisRepo) GetTPOrderID(ctx context.Context, symbol string) (string, error) {
+	key := fmt.Sprintf("tp:order:%s", symbol)
+	val, err := r.client.Get(ctx, key).Result()
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+func (r *RedisRepo) ClearTPOrderID(ctx context.Context, symbol string) error {
+	key := fmt.Sprintf("tp:order:%s", symbol)
+	return r.client.Del(ctx, key).Err()
+}
+
 func (r *RedisRepo) Close() error {
 	return r.client.Close()
 }

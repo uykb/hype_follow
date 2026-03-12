@@ -7,17 +7,15 @@ import (
 type EventType int
 
 const (
-	// Hyperliquid Events
 	EvtHLOrder EventType = iota
 	EvtHLOrderCancel
 	EvtHLFill
 
-	// Binance Events
 	EvtBinanceExecutionReport
 
-	// System Events
 	EvtSyncTimer
 	EvtSmartSyncCheck
+	EvtTPDesyncCheck
 )
 
 type Event struct {
@@ -31,6 +29,7 @@ type SmartSyncPayload struct {
 	IsTP  bool
 	Cycle int
 }
+
 
 // Payload definitions
 

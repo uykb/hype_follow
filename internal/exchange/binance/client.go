@@ -215,8 +215,18 @@ func (c *Client) GetAccountEquity(ctx context.Context) (float64, error) {
 		return 0, err
 	}
 	
-	// TotalMarginBalance is usually the equity (Wallet Balance + Unrealized PnL)
 	return strconv.ParseFloat(res.TotalMarginBalance, 64)
+}
+
+func (c *Client) GetMarketPrice(ctx context.Context, symbol string) (float64, error) {
+	prices, err := c.client.NewListPricesService().Symbol(symbol).Do(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get market price: %w", err)
+	}
+	if len(prices) == 0 {
+		return 0, fmt.Errorf("no price data for symbol %s", symbol)
+	}
+	return strconv.ParseFloat(prices[0].Price, 64)
 }
 
 func (c *Client) Stop() {

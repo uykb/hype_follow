@@ -37,16 +37,20 @@ type RedisConfig struct {
 }
 
 type TradingConfig struct {
-	Mode         string             `mapstructure:"mode"` // "fixed" or "equal"
-	FixedRatio   float64            `mapstructure:"fixed_ratio"`
-	EqualRatio   float64            `mapstructure:"equal_ratio"`
-	MinOrderSize map[string]float64 `mapstructure:"min_order_size"`
+	Mode            string             `mapstructure:"mode"` // "fixed" or "equal"
+	FixedRatio      float64            `mapstructure:"fixed_ratio"`
+	EqualRatio      float64            `mapstructure:"equal_ratio"`
+	MinOrderSize    map[string]float64 `mapstructure:"min_order_size"`
+	LongOnly        bool               `mapstructure:"long_only"`
+	TPUseMarket     bool               `mapstructure:"tp_use_market"`
 }
 
 type RiskControlConfig struct {
-	SupportedCoins  []string           `mapstructure:"supported_coins"`
-	MaxPositionSize map[string]float64 `mapstructure:"max_position_size"`
-	EmergencyStop   bool               `mapstructure:"emergency_stop"`
+	SupportedCoins     []string           `mapstructure:"supported_coins"`
+	MaxPositionSize    map[string]float64 `mapstructure:"max_position_size"`
+	EmergencyStop      bool               `mapstructure:"emergency_stop"`
+	MaxSmartSyncCycles int                `mapstructure:"max_smart_sync_cycles"`
+	TPDesyncCheckIntv  int                `mapstructure:"tp_desync_check_interval"`
 }
 
 var Cfg *Config
