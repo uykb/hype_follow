@@ -16,6 +16,8 @@ const (
 	EvtSyncTimer
 	EvtSmartSyncCheck
 	EvtTPDesyncCheck
+	EvtTPEnsureCheck
+	EvtTPPriceSync
 )
 
 type Event struct {
@@ -26,8 +28,14 @@ type Event struct {
 }
 
 type SmartSyncPayload struct {
-	IsTP  bool
-	Cycle int
+	IsTP        bool
+	Cycle       int
+	LastTPPrice float64
+}
+
+type TPPriceSyncPayload struct {
+	LastTPPrice float64
+	Cycle       int
 }
 
 

@@ -25,6 +25,7 @@ const (
 	StateIdle State = iota
 	StatePendingOrder
 	StateSyncing
+	StateTPPriceSyncing
 )
 
 type FSM struct {
@@ -40,6 +41,7 @@ type FSM struct {
 	CurrentPosition float64
 	PendingOrderID  string
 	LastTPOrderID   string
+	LastTPPrice     float64
 	DeferredEvents  []events.Event
 
 	stopChan chan struct{}
@@ -72,6 +74,7 @@ func (f *FSM) Run(ctx context.Context) {
 	logger.Log.Info("FSM Started", zap.String("symbol", f.Symbol))
 
 	f.syncPosition()
+	f.ensureTPSync()
 
 	interval := config.Cfg.RiskControl.TPDesyncCheckIntv
 	if interval <= 0 {
@@ -110,7 +113,7 @@ func (f *FSM) handleEvent(evt events.Event) {
 		zap.Int("type", int(evt.Type)))
 
 	switch f.CurrentState {
-	case StateIdle:
+	case StateIdle, StateTPPriceSyncing:
 		switch evt.Type {
 		case events.EvtHLOrder:
 			f.handleHLOrder(evt)
@@ -122,12 +125,16 @@ func (f *FSM) handleEvent(evt events.Event) {
 			f.handleSmartSyncCheck(evt)
 		case events.EvtTPDesyncCheck:
 			f.handleTPDesyncCheck(evt)
+		case events.EvtTPEnsureCheck:
+			f.handleTPEnsureCheck(evt)
+		case events.EvtTPPriceSync:
+			f.handleTPPriceSync(evt)
 		}
 	case StatePendingOrder:
 		switch evt.Type {
 		case events.EvtBinanceExecutionReport:
 			f.handleBinanceExecution(evt)
-		case events.EvtHLOrder, events.EvtHLOrderCancel, events.EvtHLFill, events.EvtSmartSyncCheck, events.EvtTPDesyncCheck:
+		case events.EvtHLOrder, events.EvtHLOrderCancel, events.EvtHLFill, events.EvtSmartSyncCheck, events.EvtTPDesyncCheck, events.EvtTPEnsureCheck, events.EvtTPPriceSync:
 			logger.Log.Info("Deferring event during PendingOrder", zap.Any("type", evt.Type))
 			f.DeferredEvents = append(f.DeferredEvents, evt)
 		}
@@ -190,7 +197,8 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 		}
 
 		quantity = currentPos
-		logger.Log.Info("Syncing TP Order Size to Current Position", zap.Float64("qty", quantity))
+		f.LastTPPrice = payload.LimitPrice
+		logger.Log.Info("Syncing TP Order Size to Current Position", zap.Float64("qty", quantity), zap.Float64("price", payload.LimitPrice))
 	} else {
 		quantity = f.Strategy.CalculateQuantity(binanceSymbol, payload.Size, hlEquity, binanceEquity)
 	}
@@ -223,7 +231,7 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 
 	var resp *futures.CreateOrderResponse
 	if payload.IsReduceOnly && config.Cfg.Trading.TPUseMarket {
-		logger.Log.Info("Using MARKET order for TP (price spread protection)")
+		logger.Log.Info("Using MARKET order for TP")
 		resp, err = f.BinanceCli.PlaceMarketOrder(ctx, binanceSymbol, side, quantity, true)
 	} else {
 		resp, err = f.BinanceCli.PlaceOrder(ctx, binanceSymbol, side, quantity, payload.LimitPrice, payload.IsReduceOnly)
@@ -345,10 +353,21 @@ func (f *FSM) handleSmartSyncCheck(evt events.Event) {
 	}
 
 	var hlPos float64
+	var hlTPrice float64
 	for _, p := range hlState.AssetPositions {
 		if p.Position.Coin == f.Symbol {
 			hlPos, _ = strconv.ParseFloat(p.Position.Szi, 64)
 			break
+		}
+	}
+
+	hlOrders, err := f.AccountMgr.GetHLOpenOrders()
+	if err == nil {
+		for _, o := range hlOrders {
+			if o.Coin == f.Symbol && o.ReduceOnly {
+				hlTPrice, _ = strconv.ParseFloat(o.LimitPx, 64)
+				break
+			}
 		}
 	}
 
@@ -378,13 +397,13 @@ func (f *FSM) handleSmartSyncCheck(evt events.Event) {
 					Type:      events.EvtSmartSyncCheck,
 					Symbol:    f.Symbol,
 					Timestamp: time.Now(),
-					Payload:   events.SmartSyncPayload{IsTP: true, Cycle: cycle + 1},
+					Payload:   events.SmartSyncPayload{IsTP: true, Cycle: cycle + 1, LastTPPrice: hlTPrice},
 				}
 			})
 			return
 		}
-		logger.Log.Info("SmartSync(TP): HL position detected, performing full sync", zap.Float64("hlPos", hlPos))
-		f.performFullSync(hlPos)
+		logger.Log.Info("SmartSync(TP): HL position detected, performing full sync", zap.Float64("hlPos", hlPos), zap.Float64("hlTPPrice", hlTPrice))
+		f.performFullSyncWithTPPrice(hlPos, hlTPrice)
 	} else {
 		if cycle == 0 {
 			time.AfterFunc(5*time.Second, func() {
@@ -392,9 +411,17 @@ func (f *FSM) handleSmartSyncCheck(evt events.Event) {
 					Type:      events.EvtSmartSyncCheck,
 					Symbol:    f.Symbol,
 					Timestamp: time.Now(),
-					Payload:   events.SmartSyncPayload{IsTP: false, Cycle: 1},
+					Payload:   events.SmartSyncPayload{IsTP: false, Cycle: 1, LastTPPrice: hlTPrice},
 				}
 			})
+			return
+		}
+
+		if hlTPrice > 0 && hlTPrice != f.LastTPPrice && math.Abs(f.CurrentPosition) > 0.0001 {
+			logger.Log.Info("SmartSync: Detected TP price change, syncing TP price",
+				zap.Float64("old_price", f.LastTPPrice),
+				zap.Float64("new_price", hlTPrice))
+			f.syncTPPrice(hlPos, hlTPrice)
 			return
 		}
 
@@ -443,9 +470,188 @@ func (f *FSM) handleTPDesyncCheck(evt events.Event) {
 		return
 	}
 
-	logger.Log.Debug("TP Desync check passed",
+	logger.Log.Debug("TP Desync check passed - both have position",
 		zap.Float64("hl_pos", hlPos),
 		zap.Float64("binance_pos", binancePos))
+}
+
+func (f *FSM) handleTPEnsureCheck(evt events.Event) {
+	logger.Log.Debug("Checking TP Ensure", zap.String("symbol", f.Symbol))
+
+	hlState, err := f.AccountMgr.GetHLState()
+	if err != nil {
+		logger.Log.Error("TPEnsureCheck: Failed to get HL state", zap.Error(err))
+		return
+	}
+
+	var hlPos float64
+	for _, p := range hlState.AssetPositions {
+		if p.Position.Coin == f.Symbol {
+			hlPos, _ = strconv.ParseFloat(p.Position.Szi, 64)
+			break
+		}
+	}
+
+	binancePos := f.CurrentPosition
+	hlAbs := math.Abs(hlPos)
+	binanceAbs := math.Abs(binancePos)
+
+	if hlAbs > 0.0001 && binanceAbs > 0.0001 {
+		if f.LastTPOrderID == "" {
+			logger.Log.Warn("TP ENSURE: Has position but no TP order, triggering full sync",
+				zap.Float64("hl_pos", hlPos),
+				zap.Float64("binance_pos", binancePos))
+			f.performFullSync(hlPos)
+			return
+		}
+	}
+
+	if hlAbs > 0.0001 && binanceAbs < 0.0001 {
+		logger.Log.Warn("TP ENSURE: HL has position but Binance is empty",
+			zap.Float64("hl_pos", hlPos),
+			zap.Float64("binance_pos", binancePos))
+		f.performFullSync(hlPos)
+		return
+	}
+
+	logger.Log.Debug("TP Ensure check passed",
+		zap.Float64("hl_pos", hlPos),
+		zap.Float64("binance_pos", binancePos),
+		zap.String("has_tp", strconv.FormatBool(f.LastTPOrderID != "")))
+}
+
+func (f *FSM) handleTPPriceSync(evt events.Event) {
+	payload := evt.Payload.(events.TPPriceSyncPayload)
+	cycle := payload.Cycle
+	lastTPPrice := payload.LastTPPrice
+
+	logger.Log.Info("Running TP Price Sync", zap.Float64("lastTPPrice", lastTPPrice), zap.Int("cycle", cycle))
+
+	maxCycles := config.Cfg.RiskControl.MaxSmartSyncCycles
+	if maxCycles <= 0 {
+		maxCycles = 12
+	}
+
+	hlState, err := f.AccountMgr.GetHLState()
+	if err != nil {
+		logger.Log.Error("TPPriceSync: Failed to get HL state", zap.Error(err))
+		return
+	}
+
+	var hlPos float64
+	var currentHLTPPrice float64
+
+	for _, p := range hlState.AssetPositions {
+		if p.Position.Coin == f.Symbol {
+			hlPos, _ = strconv.ParseFloat(p.Position.Szi, 64)
+			break
+		}
+	}
+
+	hlOrders, _ := f.AccountMgr.GetHLOpenOrders()
+	for _, o := range hlOrders {
+		if o.Coin == f.Symbol && o.ReduceOnly {
+			currentHLTPPrice, _ = strconv.ParseFloat(o.LimitPx, 64)
+			break
+		}
+	}
+
+	if math.Abs(hlPos) < 0.0001 {
+		logger.Log.Info("TPPriceSync: HL position is zero, skip")
+		return
+	}
+
+	if currentHLTPPrice == lastTPPrice {
+		logger.Log.Info("TPPriceSync: TP price unchanged, sync complete",
+			zap.Float64("tp_price", currentHLTPPrice))
+		f.syncTPPrice(hlPos, currentHLTPPrice)
+		return
+	}
+
+	if cycle >= maxCycles {
+		logger.Log.Warn("TPPriceSync: Max cycles reached, forcing sync",
+			zap.Int("cycle", cycle))
+		f.syncTPPrice(hlPos, currentHLTPPrice)
+		return
+	}
+
+	logger.Log.Info("TPPriceSync: TP price not match yet, retrying",
+		zap.Float64("expected", lastTPPrice),
+		zap.Float64("actual", currentHLTPPrice),
+		zap.Int("cycle", cycle),
+		zap.Int("max_cycles", maxCycles))
+
+	time.AfterFunc(2*time.Second, func() {
+		f.InputChan <- events.Event{
+			Type:      events.EvtTPPriceSync,
+			Symbol:    f.Symbol,
+			Timestamp: time.Now(),
+			Payload:   events.TPPriceSyncPayload{LastTPPrice: lastTPPrice, Cycle: cycle + 1},
+		}
+	})
+}
+
+func (f *FSM) syncTPPrice(hlPos float64, tpPrice float64) {
+	if math.Abs(f.CurrentPosition) < 0.0001 {
+		logger.Log.Warn("syncTPPrice: No position, skip")
+		return
+	}
+
+	binanceSymbol := f.Symbol + "USDT"
+
+	if f.LastTPOrderID != "" {
+		logger.Log.Info("Cancelling old TP order before sync new price",
+			zap.String("old_oid", f.LastTPOrderID),
+			zap.Float64("old_price", f.LastTPPrice),
+			zap.Float64("new_price", tpPrice))
+		ctxCancel, cancelCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		oid, _ := strconv.ParseInt(f.LastTPOrderID, 10, 64)
+		_ = f.BinanceCli.CancelOrder(ctxCancel, binanceSymbol, oid)
+		cancelCancel()
+		f.clearTPOrderID()
+	}
+
+	targetPos := math.Abs(f.CurrentPosition)
+	var side futures.SideType
+	if f.CurrentPosition > 0 {
+		side = futures.SideTypeSell
+	} else {
+		side = futures.SideTypeBuy
+	}
+
+	logger.Log.Info("Placing TP order with synced price",
+		zap.Float64("qty", targetPos),
+		zap.Float64("price", tpPrice))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var resp *futures.CreateOrderResponse
+	var err error
+	if config.Cfg.Trading.TPUseMarket {
+		resp, err = f.BinanceCli.PlaceMarketOrder(ctx, binanceSymbol, side, targetPos, true)
+	} else {
+		resp, err = f.BinanceCli.PlaceOrder(ctx, binanceSymbol, side, targetPos, tpPrice, true)
+	}
+
+	if err != nil {
+		logger.Log.Error("Failed to place TP order during price sync", zap.Error(err))
+		return
+	}
+
+	f.LastTPPrice = tpPrice
+	f.saveTPOrderID(strconv.FormatInt(resp.OrderID, 10))
+	logger.Log.Info("TP price sync completed", zap.String("tp_oid", f.PendingOrderID))
+}
+
+func (f *FSM) ensureTPSync() {
+	time.AfterFunc(3*time.Second, func() {
+		f.InputChan <- events.Event{
+			Type:      events.EvtTPEnsureCheck,
+			Symbol:    f.Symbol,
+			Timestamp: time.Now(),
+		}
+	})
 }
 
 func (f *FSM) startTPDesyncMonitor(ctx context.Context, interval time.Duration) {
@@ -552,7 +758,7 @@ func (f *FSM) performFullSync(hlPos float64) {
 				tpSide = futures.SideTypeBuy
 			}
 
-			logger.Log.Info("Placing Consolidated TP Order during Sync",
+			logger.Log.Info("Placing TP Order during Full Sync",
 				zap.Float64("qty", targetPos),
 				zap.Float64("price", tpPrice))
 
@@ -564,14 +770,126 @@ func (f *FSM) performFullSync(hlPos float64) {
 			}
 
 			if err != nil {
-				logger.Log.Error("Failed to place consolidated TP order", zap.Error(err))
+				logger.Log.Error("Failed to place TP order during sync", zap.Error(err))
 			} else {
+				f.LastTPPrice = tpPrice
 				f.saveTPOrderID(strconv.FormatInt(resp.OrderID, 10))
 			}
 		}
 	}
 
-	logger.Log.Info("Full Sync Completed")
+	logger.Log.Info("Full Sync Completed, scheduling re-check")
+
+	time.AfterFunc(3*time.Second, func() {
+		f.InputChan <- events.Event{
+			Type:      events.EvtTPEnsureCheck,
+			Symbol:    f.Symbol,
+			Timestamp: time.Now(),
+		}
+	})
+}
+
+func (f *FSM) performFullSyncWithTPPrice(hlPos float64, tpPrice float64) {
+	f.CurrentState = StateSyncing
+	defer func() { f.CurrentState = StateIdle }()
+
+	logger.Log.Info("Performing Full Sync with HL", zap.Float64("hlPos", hlPos), zap.Float64("tpPrice", tpPrice))
+
+	hlOrders, err := f.AccountMgr.GetHLOpenOrders()
+	if err != nil {
+		logger.Log.Error("Failed to get HL open orders", zap.Error(err))
+		return
+	}
+
+	err = f.BinanceCli.CancelAllOpenOrders(context.Background(), f.Symbol+"USDT")
+	if err != nil {
+		logger.Log.Error("Failed to cancel all open orders", zap.Error(err))
+	}
+
+	f.clearTPOrderID()
+
+	diff := hlPos - f.CurrentPosition
+	if math.Abs(diff) > 0.0001 {
+		var side futures.SideType
+		if diff > 0 {
+			side = futures.SideTypeBuy
+		} else {
+			side = futures.SideTypeSell
+		}
+
+		logger.Log.Info("Syncing Position via Market Order", zap.Float64("diff", diff))
+		_, err := f.BinanceCli.PlaceMarketOrder(context.Background(), f.Symbol+"USDT", side, math.Abs(diff), false)
+		if err != nil {
+			logger.Log.Error("Failed to sync position via market order", zap.Error(err))
+		}
+	}
+
+	for _, o := range hlOrders {
+		if o.Coin != f.Symbol {
+			continue
+		}
+
+		if config.Cfg.Trading.LongOnly && o.Side == "S" && !o.ReduceOnly {
+			continue
+		}
+
+		price, _ := strconv.ParseFloat(o.LimitPx, 64)
+		size, _ := strconv.ParseFloat(o.Sz, 64)
+
+		var side futures.SideType
+		if o.Side == "B" {
+			side = futures.SideTypeBuy
+		} else {
+			side = futures.SideTypeSell
+		}
+
+		if o.ReduceOnly {
+			continue
+		}
+
+		_, err := f.BinanceCli.PlaceOrder(context.Background(), f.Symbol+"USDT", side, size, price, o.ReduceOnly)
+		if err != nil {
+			logger.Log.Error("Failed to replicate order during sync", zap.Error(err))
+		}
+	}
+
+	if tpPrice > 0 && math.Abs(hlPos) > 0.0001 {
+		targetPos := math.Abs(hlPos)
+		var tpSide futures.SideType
+		if hlPos > 0 {
+			tpSide = futures.SideTypeSell
+		} else {
+			tpSide = futures.SideTypeBuy
+		}
+
+		logger.Log.Info("Placing TP Order during Full Sync",
+			zap.Float64("qty", targetPos),
+			zap.Float64("price", tpPrice))
+
+		var resp *futures.CreateOrderResponse
+		if config.Cfg.Trading.TPUseMarket {
+			resp, err = f.BinanceCli.PlaceMarketOrder(context.Background(), f.Symbol+"USDT", tpSide, targetPos, true)
+		} else {
+			resp, err = f.BinanceCli.PlaceOrder(context.Background(), f.Symbol+"USDT", tpSide, targetPos, tpPrice, true)
+		}
+
+		if err != nil {
+			logger.Log.Error("Failed to place TP order during sync", zap.Error(err))
+		} else {
+			f.LastTPPrice = tpPrice
+			f.saveTPOrderID(strconv.FormatInt(resp.OrderID, 10))
+		}
+	}
+
+	logger.Log.Info("Full Sync Completed, scheduling re-check for TP scenario")
+
+	time.AfterFunc(3*time.Second, func() {
+		f.InputChan <- events.Event{
+			Type:      events.EvtTPEnsureCheck,
+			Symbol:    f.Symbol,
+			Timestamp: time.Now(),
+		}
+	})
 }
 
 func (f *FSM) syncPosition() {
@@ -601,6 +919,7 @@ func (f *FSM) saveTPOrderID(orderID string) {
 
 func (f *FSM) clearTPOrderID() {
 	f.LastTPOrderID = ""
+	f.LastTPPrice = 0
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := f.Repo.ClearTPOrderID(ctx, f.Symbol); err != nil {

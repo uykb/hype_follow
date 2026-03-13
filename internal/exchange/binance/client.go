@@ -229,6 +229,10 @@ func (c *Client) GetMarketPrice(ctx context.Context, symbol string) (float64, er
 	return strconv.ParseFloat(prices[0].Price, 64)
 }
 
+func (c *Client) GetOpenOrders(ctx context.Context, symbol string) ([]*futures.Order, error) {
+	return c.client.NewListOpenOrdersService().Symbol(symbol).Do(ctx)
+}
+
 func (c *Client) Stop() {
 	close(c.done)
 }
