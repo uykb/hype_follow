@@ -78,7 +78,7 @@ func (f *FSM) Run(ctx context.Context) {
 
 	interval := config.Cfg.RiskControl.TPDesyncCheckIntv
 	if interval <= 0 {
-		interval = 10
+		interval = 60
 	}
 	go f.startTPDesyncMonitor(ctx, time.Duration(interval)*time.Second)
 
@@ -446,6 +446,15 @@ func (f *FSM) handleTPDesyncCheck(evt events.Event) {
 		}
 	}
 
+	hlOrders, _ := f.AccountMgr.GetHLOpenOrders()
+	var hlTPPrice float64
+	for _, o := range hlOrders {
+		if o.Coin == f.Symbol && o.ReduceOnly {
+			hlTPPrice, _ = strconv.ParseFloat(o.LimitPx, 64)
+			break
+		}
+	}
+
 	binancePos := f.CurrentPosition
 	hlAbs := math.Abs(hlPos)
 	binanceAbs := math.Abs(binancePos)
@@ -470,9 +479,60 @@ func (f *FSM) handleTPDesyncCheck(evt events.Event) {
 		return
 	}
 
-	logger.Log.Debug("TP Desync check passed - both have position",
+	if hlAbs > 0.0001 && binanceAbs > 0.0001 {
+		binanceOpenOrders, _ := f.BinanceCli.GetOpenOrders(context.Background(), f.Symbol+"USDT")
+		var binanceTPQty float64
+		var binanceTPPrice float64
+		for _, o := range binanceOpenOrders {
+			if o.Side == "SELL" && o.ReduceOnly {
+				binanceTPQty, _ = strconv.ParseFloat(o.OrigQty, 64)
+				binanceTPPrice, _ = strconv.ParseFloat(o.Price, 64)
+				break
+			}
+		}
+
+		needSync := false
+
+		if f.LastTPOrderID == "" && binanceTPQty < 0.0001 {
+			logger.Log.Warn("TP DESYNC: Has position but no TP order, triggering sync",
+				zap.Float64("hl_pos", hlPos),
+				zap.Float64("binance_pos", binancePos))
+			needSync = true
+		}
+
+		if !needSync && binanceTPQty > 0.0001 && hlTPPrice > 0 {
+			qtyDiff := math.Abs(binanceTPQty - binanceAbs)
+			priceDiff := math.Abs(binanceTPPrice - hlTPPrice)
+
+			if qtyDiff > 0.0001 {
+				logger.Log.Warn("TP QTY MISMATCH: Syncing TP quantity",
+					zap.Float64("binance_tp_qty", binanceTPQty),
+					zap.Float64("binance_pos", binanceAbs),
+					zap.Float64("diff", qtyDiff))
+				needSync = true
+			}
+
+			if priceDiff > 0.01 {
+				logger.Log.Warn("TP PRICE MISMATCH: Syncing TP price",
+					zap.Float64("hl_tp_price", hlTPPrice),
+					zap.Float64("binance_tp_price", binanceTPPrice),
+					zap.Float64("diff", priceDiff))
+				needSync = true
+			}
+		}
+
+		if needSync {
+			f.performFullSync(hlPos)
+			metrics.OrderFailed.WithLabelValues(f.Symbol+"USDT", "tp_desync").Inc()
+			return
+		}
+	}
+
+	logger.Log.Debug("TP Desync check passed - position, qty and price all match",
 		zap.Float64("hl_pos", hlPos),
-		zap.Float64("binance_pos", binancePos))
+		zap.Float64("binance_pos", binancePos),
+		zap.Float64("hl_tp_price", hlTPPrice),
+		zap.Float64("binance_tp_price", f.LastTPPrice))
 }
 
 func (f *FSM) handleTPEnsureCheck(evt events.Event) {

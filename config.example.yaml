@@ -32,4 +32,4 @@ risk_control:
     HYPEUSDT: 10000.0
   emergency_stop: false
   max_smart_sync_cycles: 12
-  tp_desync_check_interval: 10
+  tp_desync_check_interval: 60
