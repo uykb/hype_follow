@@ -127,18 +127,12 @@ class PositionCalculator {
    * @param {string} coin 
    */
   roundToPrecision(quantity, coin) {
-    // Binance precision configuration (simplified map)
-    // In production, this should ideally come from exchangeInfo
+    // Binance precision configuration for HYPE only
     const decimals = {
-      BTC: 3,
-      ETH: 3,
-      SOL: 1,
-      HYPE: 1,
-      // Default fallback
-      DEFAULT: 3
+      HYPE: 1
     };
 
-    const precision = decimals[coin] || decimals.DEFAULT;
+    const precision = decimals[coin] || 1;
     const factor = Math.pow(10, precision);
     
     return Math.round(quantity * factor) / factor;

@@ -15,11 +15,11 @@ trading:
   fixed_ratio: 0.1
   equal_ratio: 1.0
   min_order_size:
-    HYPEUSDT: 0.5
+    HYPE: 1.0
 
 risk_control:
   supported_coins:
-    - "HYPEUSDT"
+    - "HYPE"
   max_position_size:
-    HYPEUSDT: 10000.0
+    HYPE: 1000.0
   emergency_stop: false

@@ -30,43 +30,43 @@ async function runTests() {
   positionCalculator.mode = 'equal';
   positionCalculator.equalRatio = 20; // As requested by user
 
-  // HL Order: 0.02 BTC
-  // Expected: 0.02 * (500 / 100000) * 20 = 0.02 * 0.005 * 20 = 0.002
-  const qty1 = await positionCalculator.calculateQuantity('BTC', 0.02, MOCK_HL_ADDRESS);
-  console.log(`Input: 0.02 BTC, Result: ${qty1}`);
-  assert.strictEqual(qty1, 0.002, 'Calculation result should be 0.002');
+  // HL Order: 20 HYPE
+  // Expected: 20 * (500 / 100000) * 20 = 20 * 0.005 * 20 = 2.0
+  const qty1 = await positionCalculator.calculateQuantity('HYPE', 20, MOCK_HL_ADDRESS);
+  console.log(`Input: 20 HYPE, Result: ${qty1}`);
+  assert.strictEqual(qty1, 2.0, 'Calculation result should be 2.0');
   console.log('PASS\n');
 
   // --- Test 2: Precision Handling ---
   console.log('Test 2: Precision Handling');
-  // Input that results in long decimal: 0.023456...
+  // Input that results in long decimal: 2.3456...
   // Let's adjust ratio to produce complex number
-  // 0.02 * (500/100000) * 23.456 = 0.0023456
+  // 20 * (500/100000) * 23.456 = 2.3456
   positionCalculator.equalRatio = 23.456;
-  const qty2 = await positionCalculator.calculateQuantity('BTC', 0.02, MOCK_HL_ADDRESS);
-  console.log(`Input: 0.02 BTC (Ratio 23.456), Raw Calc: 0.0023456, Result: ${qty2}`);
-  // BTC precision is 3 decimal places -> 0.002
-  assert.strictEqual(qty2, 0.002, 'Should round to 3 decimal places for BTC');
+  const qty2 = await positionCalculator.calculateQuantity('HYPE', 20, MOCK_HL_ADDRESS);
+  console.log(`Input: 20 HYPE (Ratio 23.456), Raw Calc: 2.3456, Result: ${qty2}`);
+  // HYPE precision is 1 decimal place -> 2.3
+  assert.strictEqual(qty2, 2.3, 'Should round to 1 decimal place for HYPE');
   console.log('PASS\n');
 
   // --- Test 3: Boundary Conditions (Min Size) ---
   console.log('Test 3: Boundary Conditions (Min Size)');
   positionCalculator.equalRatio = 1; 
-  // 0.001 * (500/100000) * 1 = 0.000005
-  // Min size for BTC is 0.002
-  const qty3 = await positionCalculator.calculateQuantity('BTC', 0.001, MOCK_HL_ADDRESS);
-  console.log(`Input: 0.001 BTC (Result < Min), Result: ${qty3}`);
-  assert.strictEqual(qty3, 0.002, 'Should return min size (0.002) for quantity below minimum');
+  // 1 * (500/100000) * 1 = 0.005
+  // Min size for HYPE is 1.0
+  const qty3 = await positionCalculator.calculateQuantity('HYPE', 1, MOCK_HL_ADDRESS);
+  console.log(`Input: 1 HYPE (Result < Min), Result: ${qty3}`);
+  assert.strictEqual(qty3, 1.0, 'Should return min size (1.0) for quantity below minimum');
   console.log('PASS\n');
 
   // --- Test 4: Mode Switching (Fixed Mode) ---
   console.log('Test 4: Mode Switching (Fixed Mode)');
   positionCalculator.mode = 'fixed';
   positionCalculator.fixedRatio = 0.1;
-  // 1.0 BTC * 0.1 = 0.1 BTC
-  const qty4 = await positionCalculator.calculateQuantity('BTC', 1.0, MOCK_HL_ADDRESS);
-  console.log(`Input: 1.0 BTC (Fixed 0.1), Result: ${qty4}`);
-  assert.strictEqual(qty4, 0.1, 'Should return 0.1');
+  // 100 HYPE * 0.1 = 10 HYPE
+  const qty4 = await positionCalculator.calculateQuantity('HYPE', 100, MOCK_HL_ADDRESS);
+  console.log(`Input: 100 HYPE (Fixed 0.1), Result: ${qty4}`);
+  assert.strictEqual(qty4, 10.0, 'Should return 10.0');
   console.log('PASS\n');
 
   // --- Test 5: Caching Verification (Logic Check) ---

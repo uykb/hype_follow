@@ -66,12 +66,9 @@ class ExposureManager {
   // Helper from position-calculator logic (simplified)
   roundQuantity(quantity, coin) {
     const decimals = {
-      BTC: 3,
-      ETH: 3,
-      SOL: 1,
-      DEFAULT: 3
+      HYPE: 1
     };
-    const precision = decimals[coin] || decimals.DEFAULT;
+    const precision = decimals[coin] || 1;
     const factor = Math.pow(10, precision);
     return Math.round(quantity * factor) / factor;
   }

@@ -58,21 +58,12 @@ class BinanceClient {
    * @param {number|string} price 
    */
   roundPrice(coin, price) {
-    // Basic tick size implementation
-    // Ideally this should come from exchangeInfo
+    // Basic tick size implementation for HYPE
     const tickSizes = {
-      BTC: 1, // 0.1 for BTCUSDT usually? No, it's 0.1. Let's verify. 
-              // Actually for BTCUSDT on Futures, tick size is usually 0.1
-              // BUT, HL prices might be 94352.0.
-              // Let's use 1 decimal place for BTC/ETH to be safe, or 2.
-              // BTC: 0.1, ETH: 0.01, SOL: 0.01
-      BTC: 0.1,
-      ETH: 0.01,
-      SOL: 0.01,
-      DEFAULT: 0.0001
+      HYPE: 0.001
     };
     
-    const tickSize = tickSizes[coin] || tickSizes.DEFAULT;
+    const tickSize = tickSizes[coin] || 0.001;
     // Round to nearest tick
     const p = parseFloat(price);
     const rounded = Math.round(p / tickSize) * tickSize;

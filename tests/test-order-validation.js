@@ -11,7 +11,7 @@ async function runTests() {
   const testOid = 'test_hl_oid_999';
   const testBinanceId = '888888';
   console.log(`Setting up test mapping: ${testUser}:${testOid} -> ${testBinanceId}`);
-  await orderMapper.saveMapping(testUser, testOid, testBinanceId, 'BTCUSDT');
+  await orderMapper.saveMapping(testUser, testOid, testBinanceId, 'HYPEUSDT');
 
   // Test 1: Mapper support for timestamps
   console.log('Test 1: Mapper timestamp support');

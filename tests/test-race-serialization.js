@@ -50,16 +50,16 @@ async function testRaceCondition() {
         userAddress: user,
         oid: oid,
         status: 'open',
-        coin: 'BTC',
+        coin: 'HYPE',
         side: 'B',
-        sz: '1.0'
+        sz: '10.0'
     };
 
     const event2 = {
         userAddress: user,
         oid: oid,
         status: 'canceled',
-        coin: 'BTC'
+        coin: 'HYPE'
     };
 
     console.log('Sending event 1 (open) and event 2 (canceled) rapidly...');
@@ -69,7 +69,7 @@ async function testRaceCondition() {
     let mappingSaved = false;
     orderMapper.getBinanceOrder = async (u, o) => {
         executionOrder.push(`getMapping:${o}`);
-        if (mappingSaved) return { orderId: 'binance_123', symbol: 'BTCUSDT' };
+        if (mappingSaved) return { orderId: 'binance_123', symbol: 'HYPEUSDT' };
         return null;
     };
     

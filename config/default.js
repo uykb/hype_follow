@@ -25,21 +25,15 @@ module.exports = {
     password: process.env.REDIS_PASSWORD || undefined,
   },
   riskControl: {
-    // Whitelist of supported coins
-    supportedCoins: ['BTC', 'ETH', 'SOL', 'HYPE'],
-    // Max position size limits (not implemented in MVP but placeholder)
+    // Only HYPE trading pair is supported
+    supportedCoins: ['HYPE'],
+    // Max position size limits
     maxPositionSize: {
-      BTC: 0.1,
-      ETH: 2.0,
-      SOL: 20.0,
-      HYPE: 1000.0 // Add max position size for HYPE
+      HYPE: 1000.0
     },
     // Threshold for aggressive risk reduction (reduce half)
     reductionThreshold: {
-      BTC: 0.015,
-      ETH: 0.2,
-      SOL: 5,
-      HYPE: 100.0 // Add threshold for HYPE
+      HYPE: 100.0
     }
   },
   trading: {
@@ -52,12 +46,9 @@ module.exports = {
     // Fixed ratio multiplier (only for fixed mode)
     fixedRatio: parseFloat(process.env.FIXED_RATIO) || 0.1,
 
-    // Maximum position size to prevent liquidation risk
+    // Maximum position size to prevent liquidation risk (HYPE only)
     maxPositionSize: {
-      BTC: 0.5,
-      ETH: 5,
-      SOL: 50,
-      HYPE: 100.0 // Maximum 100 HYPE
+      HYPE: 100.0
     },
 
     // Account info cache TTL in seconds
@@ -66,12 +57,9 @@ module.exports = {
     // Default scale factor (only for scaled mode)
     defaultScale: 1.0,
 
-    // Min order sizes (static config - to be enhanced with API data if needed)
+    // Min order size for HYPE
     minOrderSize: {
-      BTC: 0.002,
-      ETH: 0.007,
-      SOL: 0.04,
-      HYPE: 1.0 // Minimum order size for HYPE
+      HYPE: 1.0
     },
 
     // User-specific strategies
