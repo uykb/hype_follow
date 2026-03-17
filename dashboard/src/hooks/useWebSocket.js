@@ -2,27 +2,21 @@ import { useState, useEffect } from 'react';
 
 const WS_URL = window.location.origin.replace(/^http/, 'ws');
 
-export const useWebSocket = (token) => {
+export const useWebSocket = () => {
   const [snapshot, setSnapshot] = useState(null);
   const [logs, setLogs] = useState([]);
   const [connected, setConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(null);
 
   useEffect(() => {
-    if (!token) return;
-
     let ws;
     let reconnectTimer;
 
     const connect = () => {
       try {
-        // Pass token via query parameter
-        const url = new URL(WS_URL);
-        url.searchParams.set('token', token);
-        console.log('Attempting WS connection to:', url.origin, 'with token');
-        ws = new WebSocket(url.toString());
+        ws = new WebSocket(WS_URL);
       } catch (err) {
-        console.error('Failed to create WebSocket URL', err);
+        console.error('Failed to create WebSocket', err);
         return;
       }
 

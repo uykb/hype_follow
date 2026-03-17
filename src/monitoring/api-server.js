@@ -7,11 +7,6 @@ const config = require('config');
 const path = require('path');
 const logger = require('../utils/logger');
 const dataCollector = require('./data-collector');
-const orderValidator = require('../core/order-validator');
-const binanceClient = require('../binance/api-client');
-
-const authUtil = require('../utils/auth-util');
-const authMiddleware = require('../middleware/auth-middleware');
 
 const PORT = process.env.MONITORING_PORT || 49618;
 
@@ -26,53 +21,7 @@ function startServer() {
   app.use(cors());
   app.use(express.json());
 
-  // --- Admin & Auth Routes ---
-  
-  app.get('/api/admin/status', async (req, res) => {
-    const configured = await authUtil.isConfigured();
-    res.json({ configured });
-  });
-
-  app.get('/api/admin/setup-qr', async (req, res) => {
-    const configured = await authUtil.isConfigured();
-    if (configured) {
-      return res.status(403).json({ error: 'System already configured' });
-    }
-    const data = await authUtil.generateSetupData();
-    res.json(data);
-  });
-
-  app.post('/api/admin/setup', async (req, res) => {
-    const configured = await authUtil.isConfigured();
-    if (configured) {
-      return res.status(403).json({ error: 'System already configured' });
-    }
-    const { token, secret } = req.body;
-    if (authUtil.verifyToken(token, secret)) {
-      await authUtil.saveSecret(secret);
-      const jwt = authUtil.generateJWT();
-      res.json({ success: true, token: jwt });
-    } else {
-      res.status(400).json({ error: 'Invalid token' });
-    }
-  });
-
-  app.post('/api/admin/login', async (req, res) => {
-    const { token } = req.body;
-    const secret = await authUtil.getSecret();
-    if (!secret) {
-      return res.status(403).json({ error: 'System not configured' });
-    }
-    if (authUtil.verifyToken(token, secret)) {
-      const jwt = authUtil.generateJWT();
-      res.json({ success: true, token: jwt });
-    } else {
-      res.status(400).json({ error: 'Invalid token' });
-    }
-  });
-
-  // --- Protected API Routes ---
-  app.use('/api', authMiddleware);
+  // --- Public API Routes (No Auth Required) ---
 
   app.get('/api/snapshot', (req, res) => {
     res.json(dataCollector.getSnapshot());
@@ -102,62 +51,6 @@ function startServer() {
     res.json(safeConfig);
   });
 
-  // --- Manual Trading Routes ---
-
-  app.get('/api/trade/open-orders', async (req, res) => {
-    try {
-      const orders = await binanceClient.client.futuresOpenOrders();
-      res.json(orders);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post('/api/trade/manual', async (req, res) => {
-    try {
-      const { symbol, side, type, price, quantity } = req.body;
-      const coin = symbol.replace('USDT', '');
-      
-      let result;
-      if (type === 'LIMIT') {
-        result = await binanceClient.createLimitOrder(coin, side === 'BUY' ? 'B' : 'A', price, quantity, false);
-      } else {
-        result = await binanceClient.createMarketOrder(coin, side === 'BUY' ? 'B' : 'A', quantity, false);
-      }
-      
-      res.json({ success: true, order: result });
-    } catch (error) {
-      res.status(400).json({ error: error.message });
-    }
-  });
-
-  app.post('/api/trade/cancel', async (req, res) => {
-    try {
-      const { symbol, orderId } = req.body;
-      await binanceClient.cancelOrder(symbol, orderId);
-      res.json({ success: true });
-    } catch (error) {
-      res.status(400).json({ error: error.message });
-    }
-  });
-
-  app.post('/api/config/update', async (req, res) => {
-    // In a real scenario, we'd write to a file or Redis.
-    // For this MVP, we'll log it and acknowledge.
-    // NOTE: In production, you'd want to persist this to config/local.json or Redis.
-    logger.info('Config update received (MVP - not yet persisted to disk)', req.body);
-    res.json({ success: true, message: 'Settings updated successfully (Note: Changes may require restart)' });
-  });
-
-  app.get('/api/orders/validate', async (req, res) => {
-    try {
-      const report = await orderValidator.getReport();
-      res.json(report);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
   // Serve static files from dashboard build (if exists)
   const dashboardPath = path.join(__dirname, '../../dashboard/dist');
   app.use(express.static(dashboardPath));
@@ -174,26 +67,12 @@ function startServer() {
     });
   });
 
-  // --- WebSocket Logic ---
+  // --- WebSocket Logic (No Auth) ---
 
   wss.on('connection', (ws, req) => {
-    logger.debug(`WS connection attempt from ${req.socket.remoteAddress} with URL: ${req.url}`);
+    logger.debug(`WS connection from ${req.socket.remoteAddress}`);
     
-    // Auth via Query Parameter
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const token = url.searchParams.get('token');
-
-    const decoded = authUtil.verifyJWT(token);
-    if (!decoded) {
-      logger.warn(`Unauthorized WS connection attempt from ${req.socket.remoteAddress}`, { 
-        url: req.url,
-        hasToken: !!token 
-      });
-      ws.close(4001, 'Unauthorized');
-      return;
-    }
-
-    logger.info('Authenticated monitoring client connected');
+    logger.info('Monitoring client connected');
     
     // Send initial snapshot
     ws.send(JSON.stringify({ type: 'snapshot', data: dataCollector.getSnapshot() }));

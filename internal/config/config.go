@@ -9,7 +9,6 @@ type Config struct {
 	App         AppConfig         `mapstructure:"app"`
 	Binance     BinanceConfig     `mapstructure:"binance"`
 	Hyperliquid HyperliquidConfig `mapstructure:"hyperliquid"`
-	Redis       RedisConfig       `mapstructure:"redis"`
 	Trading     TradingConfig     `mapstructure:"trading"`
 	RiskControl RiskControlConfig `mapstructure:"risk_control"`
 }
@@ -27,13 +26,6 @@ type BinanceConfig struct {
 
 type HyperliquidConfig struct {
 	AccountAddress string `mapstructure:"account_address"`
-}
-
-type RedisConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
 }
 
 type TradingConfig struct {

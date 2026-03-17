@@ -24,11 +24,12 @@ type Manager struct {
 	// Shared Components
 	Strategy   *strategy.Calculator
 	Risk       *risk.RiskManager
-	Repo       *repository.RedisRepo
+	Store      *repository.MemoryStore
 	AccountMgr *account.Manager
+	LockMgr    *repository.MemoryLock
 }
 
-func NewManager(eventChan <-chan events.Event, binanceCli *binance.Client, strat *strategy.Calculator, risk *risk.RiskManager, repo *repository.RedisRepo, acct *account.Manager) *Manager {
+func NewManager(eventChan <-chan events.Event, binanceCli *binance.Client, strat *strategy.Calculator, riskMgr *risk.RiskManager, acct *account.Manager) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		fsms:       make(map[string]*FSM),
@@ -37,9 +38,10 @@ func NewManager(eventChan <-chan events.Event, binanceCli *binance.Client, strat
 		ctx:        ctx,
 		cancel:     cancel,
 		Strategy:   strat,
-		Risk:       risk,
-		Repo:       repo,
+		Risk:       riskMgr,
+		Store:      repository.NewMemoryStore(),
 		AccountMgr: acct,
+		LockMgr:    repository.NewMemoryLock(),
 	}
 }
 
@@ -71,7 +73,7 @@ func (m *Manager) Dispatch(evt events.Event) {
 		m.mu.Lock()
 		// Double check
 		if fsm, exists = m.fsms[symbol]; !exists {
-			fsm = NewFSM(symbol, m.binanceCli, m.Strategy, m.Risk, m.Repo, m.AccountMgr)
+			fsm = NewFSM(symbol, m.binanceCli, m.Strategy, m.Risk, m.Store, m.AccountMgr, m.LockMgr)
 			m.fsms[symbol] = fsm
 			go fsm.Run(m.ctx)
 			logger.Log.Info("Created new FSM", zap.String("symbol", symbol))

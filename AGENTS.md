@@ -6,24 +6,19 @@ It covers build commands, code style, architecture, and workflow rules to ensure
 ## 1. Build, Lint, and Test Commands
 
 ### Backend (Root)
-The backend is a high-performance Go application implementing an Event-Driven Finite State Machine (ED-FSM) architecture.
+The backend is a Node.js application implementing an automated trading system that replicates orders from Hyperliquid to Binance.
 
-- **Dependencies**: `go mod tidy`
-- **Build**: `make build` (Outputs to `bin/hypefollow-bot` or `bin/bot.exe`)
-- **Run**: `make run` or `./bin/bot.exe`
-- **Clean**: `make clean`
-
-### Testing
-- **Run All Tests**: `go test ./...`
-- **Run Specific Package**: `go test ./internal/core/strategy`
-- **Run Specific Test**: `go test -v -run TestCalculateQuantity ./internal/core/strategy`
+- **Dependencies**: `npm install`
+- **Run**: `npm start`
+- **Development**: `npm run dev`
 
 ### Dashboard (Frontend)
-The `dashboard/` directory contains a React application built with Vite. (Currently decoupling from backend)
+The `dashboard/` directory contains a **read-only monitoring interface** built with React and Vite. It displays real-time system status without authentication or manual trading capabilities.
 
 - **Setup**: `cd dashboard && npm install`
 - **Development**: `cd dashboard && npm run dev`
 - **Build**: `cd dashboard && npm run build`
+- **Access**: Dashboard is served at the same port as the API (default: 49618)
 
 ## 2. Code Style & Conventions
 
@@ -37,14 +32,13 @@ Follow standard Go conventions (Effective Go).
     *   Secrets must be loaded from environment variables or secure config files.
     *   Never hardcode API keys.
 
-### Project Layout (Standard Go Layout)
-*   `cmd/bot/`: Application entry point (`main.go`).
-*   `internal/`: Private application and library code.
-    *   `config/`: Configuration loading.
-    *   `core/`: Business logic (FSM, Events, Strategy, Risk).
-    *   `exchange/`: Exchange adapters (Binance, Hyperliquid).
-    *   `repository/`: Data access layer (Redis).
-*   `pkg/`: Library code ok to use by external applications (e.g., `logger`, `metrics`).
+### Project Layout
+*   `src/index.js`: Application entry point.
+*   `src/core/`: Business logic (Order Executor, Risk Control, Position Tracker).
+*   `src/exchange/`: Exchange adapters (Binance, Hyperliquid).
+*   `src/monitoring/`: API server and data collector for the dashboard.
+*   `src/utils/`: Utility functions (Logger, Redis, etc.).
+*   `dashboard/`: Read-only React monitoring interface.
 
 ### Naming
 *   **Files**: `snake_case.go` (e.g., `ws_client.go`).
@@ -61,34 +55,31 @@ Follow standard Go conventions (Effective Go).
 
 ## 3. Architecture Overview
 
-The system uses an **Event-Driven Finite State Machine (ED-FSM)** architecture.
+The system uses an **Event-Driven Architecture** with real-time data synchronization.
 
 ### Core Components
-1.  **Event Bus**: Go Channels (`chan events.Event`) transport messages between components.
-2.  **FSM Manager** (`internal/core/fsm/manager.go`): Manages lifecycle of FSM actors.
-3.  **FSM Actor** (`internal/core/fsm/fsm.go`): One Goroutine per Symbol.
-    *   **States**: `Idle`, `PendingOrder`, `Syncing`.
-    *   **Inputs**: HL Order/Fill Events, Binance Execution Reports.
-4.  **Hyperliquid Adapter** (`internal/exchange/hyperliquid`):
+1.  **Order Executor** (`src/core/order-executor.js`): Main execution logic for replicating orders.
+2.  **Position Tracker** (`src/core/position-tracker.js`): Tracks positions across exchanges.
+3.  **Risk Control** (`src/core/risk-control.js`): Validates trades against risk limits.
+4.  **Consistency Engine** (`src/core/consistency-engine.js`): Ensures order consistency between exchanges.
+5.  **Hyperliquid Adapter** (`src/hyperliquid/`):
     *   WebSocket Client: Listens for `orderUpdates` and `userFills`.
-    *   HTTP Client: Fetches Account Equity.
-5.  **Binance Adapter** (`internal/exchange/binance`):
-    *   WebSocket User Stream: Listens for `ExecutionReport`.
+    *   HTTP Client: Fetches account data.
+6.  **Binance Adapter** (`src/binance/`):
     *   API Client: Places orders, fetches equity.
-6.  **Strategy Engine** (`internal/core/strategy`): Calculates position sizes (`Fixed` or `Equal` ratio).
-7.  **Risk Manager** (`internal/core/risk`): Pre-trade checks (Whitelist, Max Position, Emergency Stop).
-8.  **Account Manager** (`internal/core/account`): Maintains real-time equity state.
-9.  **Repository** (`internal/repository`): Redis persistence for:
-    *   Order Mapping (`map:h2b:<oid>`)
-    *   Distributed Locks (`orderLock:<oid>`)
+    *   WebSocket User Stream: Listens for execution reports.
+7.  **Monitoring Dashboard** (`src/monitoring/` + `dashboard/`):
+    *   **Read-only display**: Shows real-time system status, positions, equity, and logs.
+    *   **No authentication**: Direct access without login.
+    *   **No trading controls**: Cannot place or cancel orders manually.
+    *   **WebSocket updates**: Real-time data stream via WebSocket.
 
 ### Data Flow
-1.  **HL WS** receives `Order` event -> `EventBus`.
-2.  **FSM Manager** dispatches event to specific `Symbol FSM`.
-3.  **FSM** calls `AccountManager` for equity -> `Strategy` for size -> `Risk` for validation.
-4.  **FSM** acquires `Redis Lock`.
-5.  **FSM** calls `Binance Client` to place order.
-6.  **FSM** saves mapping to `Redis` and updates State to `Pending`.
+1.  **HL WS** receives `Order` event.
+2.  **Order Executor** validates and calculates position size.
+3.  **Risk Control** performs pre-trade checks.
+4.  **Binance Client** places the corresponding order.
+5.  **Monitoring** displays real-time updates via WebSocket.
 
 ## 4. Agent Workflow Rules
 
@@ -102,5 +93,5 @@ The system uses an **Event-Driven Finite State Machine (ED-FSM)** architecture.
 
 ## 5. Common Pitfalls
 -   **Blocking the Event Loop**: FSM handlers must be fast. Offload heavy IO if necessary (though network IO is async in Go, avoid long sleeps).
--   **Precision Issues**: Use `shopspring/decimal` for all money/quantity calculations. Never use `float64` for math logic.
+-   **Precision Issues**: Use `decimal.js` for all money/quantity calculations. Never use JavaScript floating-point math for financial logic.
 -   **Context Cancellation**: Respect `context.Context` for graceful shutdowns and timeouts.

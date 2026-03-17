@@ -10,12 +10,6 @@ binance:
 hyperliquid:
   account_address: "0xdc899ed4a80e7bbe7c86307715507c828901f196"
 
-redis:
-  host: "localhost"
-  port: 6379
-  password: ""
-  db: 0
-
 trading:
   mode: "fixed"
   fixed_ratio: 0.1

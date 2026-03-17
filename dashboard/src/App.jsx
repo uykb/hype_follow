@@ -1,10 +1,9 @@
 import React from 'react';
-import { ThemeProvider, CssBaseline, Container, Grid, Box, Typography, CircularProgress, Button, IconButton, Tooltip } from '@mui/material';
-import { TrendingUp, Speed, AccountBalance, CheckCircle, Logout } from '@mui/icons-material';
+import { ThemeProvider, CssBaseline, Container, Grid, Box, Typography, CircularProgress } from '@mui/material';
+import { TrendingUp, Speed, AccountBalance, CheckCircle } from '@mui/icons-material';
 
 import theme from './theme/theme';
 import { useWebSocket } from './hooks/useWebSocket';
-import { useAuth } from './hooks/useAuth';
 
 import Header from './components/Header';
 import StatCard from './components/StatCard';
@@ -14,32 +13,9 @@ import FollowedUsers from './components/FollowedUsers';
 import LogsPanel from './components/LogsPanel';
 import EquityChart from './components/EquityChart';
 import TradeHistory from './components/TradeHistory';
-import ConfigPanel from './components/ConfigPanel';
-import ManualTradePanel from './components/ManualTradePanel';
-import Login from './pages/Login';
-import Setup from './pages/Setup';
 
 function App() {
-  const { token, isConfigured, login, logout } = useAuth();
-  const { snapshot, logs, connected, lastUpdate } = useWebSocket(token);
-
-  if (!isConfigured) {
-    return (
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <Setup onComplete={login} />
-      </ThemeProvider>
-    );
-  }
-
-  if (!token) {
-    return (
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <Login onLogin={login} />
-      </ThemeProvider>
-    );
-  }
+  const { snapshot, logs, connected, lastUpdate } = useWebSocket();
 
   if (!snapshot) {
     return (
@@ -51,7 +27,6 @@ function App() {
           <Typography variant="body2" sx={{ mt: 1, color: 'text.secondary', textAlign: 'center' }}>
             如果长时间停留在此页面，请尝试强制刷新 (Ctrl+F5) 或检查后端日志。
           </Typography>
-          <Button onClick={logout} variant="outlined" sx={{ mt: 4 }}>退出登录</Button>
         </Box>
       </ThemeProvider>
     );
@@ -67,13 +42,7 @@ function App() {
             connected={connected} 
             lastUpdate={lastUpdate} 
             emergencyStop={config.emergencyStop} 
-        >
-          <Tooltip title="退出登录">
-            <IconButton onClick={logout} color="inherit" size="small">
-              <Logout fontSize="small" />
-            </IconButton>
-          </Tooltip>
-        </Header>
+        />
 
         <Container maxWidth="xl" sx={{ mt: 3 }}>
           {/* Top Stats Row */}
@@ -103,8 +72,6 @@ function App() {
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <EquityChart data={history?.equity || []} />
                 <PositionsList positions={accounts.binance.positions} drifts={drifts} />
-                <ManualTradePanel token={token} supportedCoins={config.supportedCoins || ['BTC', 'ETH', 'SOL']} />
-                <ConfigPanel token={token} />
                 <Grid container spacing={3}>
                   <Grid item xs={12} md={6}>
                     <OrderMappings mappings={mappings} />

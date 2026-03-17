@@ -32,23 +32,25 @@ type FSM struct {
 	BinanceCli   *binance.Client
 	Strategy     *strategy.Calculator
 	Risk         *risk.RiskManager
-	Repo         *repository.RedisRepo
+	Store        *repository.MemoryStore
 	AccountMgr   *account.Manager
+	LockMgr      *repository.MemoryLock
 	
 	// Local State
 	CurrentPosition float64
 	PendingOrderID  string
 }
 
-func NewFSM(symbol string, cli *binance.Client, strat *strategy.Calculator, risk *risk.RiskManager, repo *repository.RedisRepo, acct *account.Manager) *FSM {
+func NewFSM(symbol string, cli *binance.Client, strat *strategy.Calculator, risk *risk.RiskManager, store *repository.MemoryStore, acct *account.Manager, lockMgr *repository.MemoryLock) *FSM {
 	return &FSM{
 		Symbol:     symbol,
 		InputChan:  make(chan events.Event, 100), // Buffer
 		BinanceCli: cli,
 		Strategy:   strat,
 		Risk:       risk,
-		Repo:       repo,
+		Store:      store,
 		AccountMgr: acct,
+		LockMgr:    lockMgr,
 	}
 }
 
@@ -108,7 +110,7 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 	}
 
 	// 1. Symbol Mapping (Simplified)
-	// In production, use a robust mapper (e.g., Redis or Config)
+	// In production, use a robust mapper (e.g., Config or Database)
 	binanceSymbol := payload.Coin + "USDT" 
 
 	// 2. Side Mapping
@@ -147,11 +149,11 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 		return
 	}
 
-	// 5. Distributed Lock
+	// 5. Memory Lock
 	ctxLock, cancelLock := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelLock()
 	
-	locked, err := f.Repo.AcquireLock(ctxLock, payload.OrderID, 10*time.Second)
+	locked, err := f.LockMgr.AcquireLock(ctxLock, payload.OrderID, 10*time.Second)
 	if err != nil || !locked {
 		logger.Log.Warn("Failed to acquire lock, skipping order", zap.String("oid", payload.OrderID))
 		return
@@ -184,7 +186,7 @@ func (f *FSM) handleHLOrder(evt events.Event) {
 	go func() {
 		ctxRepo, cancelRepo := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelRepo()
-		if err := f.Repo.SaveOrderMapping(ctxRepo, payload.OrderID, resp.OrderID); err != nil {
+		if err := f.Store.SaveOrderMapping(ctxRepo, payload.OrderID, resp.OrderID); err != nil {
 			logger.Log.Error("Failed to save order mapping", zap.Error(err))
 		}
 	}()
@@ -203,7 +205,7 @@ func (f *FSM) handleHLOrderCancel(evt events.Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	binanceOID, err := f.Repo.GetBinanceOrderID(ctx, payload.OrderID)
+	binanceOID, err := f.Store.GetBinanceOrderID(ctx, payload.OrderID)
 	if err != nil {
 		logger.Log.Warn("Failed to find mapped order for cancellation", zap.String("hl_oid", payload.OrderID))
 		return

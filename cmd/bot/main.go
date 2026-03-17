@@ -11,7 +11,6 @@ import (
 	"github.com/uykb/HypeFollow/internal/core/strategy"
 	"github.com/uykb/HypeFollow/internal/exchange/binance"
 	"github.com/uykb/HypeFollow/internal/exchange/hyperliquid"
-	"github.com/uykb/HypeFollow/internal/repository"
 	"github.com/uykb/HypeFollow/pkg/logger"
 	"go.uber.org/zap"
 	"os"
@@ -31,9 +30,6 @@ func main() {
 	logger.Log.Info("Starting HypeFollow Bot (Go Version)", zap.String("env", config.Cfg.App.Env))
 
 	// 3. Init Core Components
-	repo := repository.NewRedisRepo()
-	defer repo.Close()
-	
 	strat := strategy.NewCalculator()
 	riskManager := risk.NewRiskManager()
 
@@ -59,7 +55,7 @@ func main() {
 	go accountMgr.Start(context.Background())
 
 	// 7. Init Core FSM Manager
-	fsmManager := fsm.NewManager(eventChan, binanceCli, strat, riskManager, repo, accountMgr)
+	fsmManager := fsm.NewManager(eventChan, binanceCli, strat, riskManager, accountMgr)
 	go fsmManager.Run()
 	defer fsmManager.Stop()
 
