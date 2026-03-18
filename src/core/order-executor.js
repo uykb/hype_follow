@@ -14,7 +14,41 @@ class OrderExecutor {
     this.positionMonitorActive = false;
     this.positionMonitorTimer = null;
     this.lastKnownPosition = null;
+    // Debounce tracking for TP adjustments
+    this.tpAdjustmentTimers = new Map();
+    this.TP_ADJUSTMENT_DEBOUNCE_MS = 3000; // 3 second debounce
   }
+
+  /**
+   * Adjust Take Profit order with debouncing
+   * Prevents multiple rapid adjustments when both Binance and HL fill events trigger
+   * @param {string} coin 
+   * @param {string} userAddress
+   */
+  async adjustTakeProfitOrderDebounced(coin, userAddress) {
+    const key = `${coin}:${userAddress}`;
+    
+    // Clear existing timer if any
+    if (this.tpAdjustmentTimers.has(key)) {
+      clearTimeout(this.tpAdjustmentTimers.get(key));
+    }
+    
+    // Set new timer
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(async () => {
+        this.tpAdjustmentTimers.delete(key);
+        try {
+          await this.adjustTakeProfitOrder(coin, userAddress);
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      }, this.TP_ADJUSTMENT_DEBOUNCE_MS);
+      
+      this.tpAdjustmentTimers.set(key, timer);
+    });
+  }
+
   /**
    * Automatically adjusts the Take Profit (closeAllOnSell) order size when position changes
    * This should be called after any successful buy order fill on Binance

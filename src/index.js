@@ -13,6 +13,7 @@ const dataCollector = require('./monitoring/data-collector');
 const positionTracker = require('./core/position-tracker');
 const consistencyEngine = require('./core/consistency-engine');
 const orderExecutor = require('./core/order-executor');
+const takeProfitHandler = require('./core/take-profit-handler');
 
 // Event Serialization (Prevent Race Conditions)
 const orderQueues = new Map();
@@ -139,6 +140,11 @@ async function main() {
     await orderExecutor.syncUserOrders(ADDRESS2);
   }
 
+  // 2c. Initialize take-profit position tracking and start monitoring
+  await takeProfitHandler.initializePositionTracking();
+  takeProfitHandler.startPositionMonitoring();
+  logger.info('[Main] Take-profit monitoring started');
+
   // 3. Start Order Validator (Cleanups)
   orderValidator.start();
 
@@ -161,6 +167,25 @@ async function main() {
       // Only follow Taker trades (active moves)
       if (fillData.crossed) {
         await orderExecutor.executeMarketOrder(fillData);
+      }
+
+      // 6b. Trigger TP adjustment after HL buy fill for Martingale strategy
+      // This ensures TP syncs even when HL fills after Binance
+      const ADDRESS2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
+      if (fillData.side === 'B' && fillData.userAddress === ADDRESS2) {
+        const userStrategies = config.get('trading.userStrategies') || {};
+        const userStrategy = userStrategies[ADDRESS2] && userStrategies[ADDRESS2][fillData.coin] 
+          ? userStrategies[ADDRESS2][fillData.coin].strategy : null;
+        
+        if (userStrategy === 'closeAllOnSell') {
+          // Delay to allow HL to update TP price after position change
+          // HL may adjust TP after buy fill, we need to wait for that
+          setTimeout(() => {
+            orderExecutor.adjustTakeProfitOrderDebounced(fillData.coin, ADDRESS2).catch(err => {
+              logger.error(`[HL-Fill] Error adjusting TP order for ${fillData.coin}`, err);
+            });
+          }, 2000); // 2 second delay for HL to process position change
+        }
       }
     } catch (error) {
       logger.error('Failed to process fill event', error);
@@ -188,32 +213,59 @@ async function main() {
            const coin = order.symbol.replace('USDT', '');
            const side = order.side || order.S;
            
-            // 1. Check for specific Martingale Take Profit Adjustment
-            // If we just successfully BOUGHT (added to position), we need to update our total TP sell order
-            if (side === 'BUY') {
-              // For safety, we check if this user has the strategy enabled
-              // Since this is a global Binance event, we find the mapping to know which user triggered this
-              const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
-              if (mapping) {
-                const userStrategies = config.get('trading.userStrategies') || {};
-                const userStrategy = userStrategies[mapping.user] && userStrategies[mapping.user][coin] ? userStrategies[mapping.user][coin].strategy : null;
-                
-                if (userStrategy === 'closeAllOnSell') {
-                  // Trigger the TP adjustment routine asynchronously so we don't block the event loop
-                  setTimeout(() => {
-                    orderExecutor.adjustTakeProfitOrder(coin, mapping.user).catch(err => {
-                      logger.error(`Error auto-adjusting TP order for ${coin}`, err);
-                    });
-                  }, 500); // Slight delay to ensure position data is updated in Binance backend
-                }
-              }
-            }
+// 1. Check for specific Martingale Take Profit Adjustment
+             // If we just successfully BOUGHT (added to position), we need to update our total TP sell order
+             // NOTE: Binance may fill before HL due to price differences
+             // We trigger TP adjustment here, and also trigger again when HL fills
+             // This dual-trigger ensures TP stays in sync regardless of which fills first
+             if (side === 'BUY') {
+               // For safety, we check if this user has the strategy enabled
+               // Since this is a global Binance event, we find the mapping to know which user triggered this
+               const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
+               if (mapping) {
+                 const userStrategies = config.get('trading.userStrategies') || {};
+                 const userStrategy = userStrategies[mapping.user] && userStrategies[mapping.user][coin] ? userStrategies[mapping.user][coin].strategy : null;
+                 
+                 if (userStrategy === 'closeAllOnSell') {
+                   // Trigger the TP adjustment routine asynchronously
+                   // Use longer delay to allow HL to potentially fill and update TP
+                   setTimeout(() => {
+                     orderExecutor.adjustTakeProfitOrderDebounced(coin, mapping.user).catch(err => {
+                       logger.error(`Error auto-adjusting TP order for ${coin}`, err);
+                     });
+                   }, 1500); // 1.5s delay - HL may fill after Binance
+                 }
+               }
+             }
 
             // 1b. Handle SELL fills (Take Profit / Position Close) for address 2
             // When position is closed, we need to sync HL orders to get new orders
             if (side === 'SELL') {
               const mapping = await orderMapper.getHyperliquidOrder(binanceOrderId);
               if (mapping && mapping.user === '0xdc899ed4a80e7bbe7c86307715507c828901f196') {
+                // Check if this is a take-profit (position going to zero)
+                try {
+                  const position = await binanceClient.getPositionDetails(coin);
+                  const currentPos = position ? Math.abs(position.amount) : 0;
+                  
+                  // If position is near zero after SELL, this is likely a TP trigger
+                  const tpThreshold = config.get('trading.takeProfitRestart.positionZeroThreshold') || 0.01;
+                  if (currentPos < tpThreshold) {
+                    logger.info(`[Index] Take-profit detected! Position: ${currentPos} ${coin} (below threshold ${tpThreshold})`);
+                    
+                    // Check if TP restart is enabled
+                    const tpRestartEnabled = config.get('trading.takeProfitRestart.enabled') !== false;
+                    if (tpRestartEnabled && !takeProfitHandler.isInShutdown()) {
+                      // Trigger TP handler - will clean up and restart
+                      await takeProfitHandler.handleTakeProfitTriggered(coin);
+                      return; // Exit early, process will restart
+                    }
+                  }
+                } catch (posError) {
+                  logger.warn(`[Index] Could not check position after SELL fill`, posError);
+                }
+                
+                // If not TP or TP restart disabled, do normal sync
                 logger.info(`[Index] SELL fill detected for address 2, triggering order sync...`);
                 setTimeout(() => {
                   orderExecutor.syncUserOrders(mapping.user, { isInitialSync: false }).catch(err => {
@@ -252,6 +304,7 @@ async function main() {
   process.on('SIGINT', () => {
     logger.info('Shutting down...');
     orderValidator.stop();
+    takeProfitHandler.stopPositionMonitoring();
     hyperWs.close();
     redis.disconnect();
     process.exit(0);

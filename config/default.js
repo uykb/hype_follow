@@ -27,9 +27,9 @@ module.exports = {
   riskControl: {
     // Only HYPE trading pair is supported
     supportedCoins: ['HYPE'],
-    // Max position size limits
+    // Max position size limits (reduced to prevent liquidation risk)
     maxPositionSize: {
-      HYPE: 1000.0
+      HYPE: 100.0
     },
     // Threshold for aggressive risk reduction (reduce half)
     reductionThreshold: {
@@ -69,6 +69,17 @@ module.exports = {
           strategy: 'closeAllOnSell'
         }
       }
+    },
+
+    // Take-profit restart configuration
+    // When TP is triggered, clean up all orders and restart the process
+    takeProfitRestart: {
+      // Enable/disable TP restart feature
+      enabled: process.env.TP_RESTART_ENABLED !== 'false', // Default: true
+      // Position threshold to consider as "zero" (in coin units)
+      positionZeroThreshold: parseFloat(process.env.TP_POSITION_THRESHOLD) || 0.01,
+      // How often to check for TP trigger (in milliseconds)
+      checkIntervalMs: parseInt(process.env.TP_CHECK_INTERVAL) || 3000
     }
   },
   monitoring: {
