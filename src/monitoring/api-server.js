@@ -7,6 +7,7 @@ const config = require('config');
 const path = require('path');
 const logger = require('../utils/logger');
 const dataCollector = require('./data-collector');
+const systemMonitor = require('./system-monitor');
 
 const PORT = process.env.MONITORING_PORT || 49618;
 
@@ -49,6 +50,15 @@ function startServer() {
       }
     };
     res.json(safeConfig);
+  });
+
+  // System monitoring endpoint
+  app.get('/api/system', (req, res) => {
+    const metrics = systemMonitor.lastMetrics;
+    if (!metrics) {
+      return res.status(503).json({ error: 'System metrics not yet available' });
+    }
+    res.json(metrics);
   });
 
   // Serve static files from dashboard build (if exists)
@@ -102,11 +112,22 @@ function startServer() {
     });
   });
 
+  // Broadcast system metrics
+  systemMonitor.on('metrics', (metrics) => {
+    const message = JSON.stringify({ type: 'system', data: metrics });
+    wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  });
+
   server.listen(PORT, '0.0.0.0', () => {
     logger.info(`Monitoring API Server running on http://0.0.0.0:${PORT}`);
   });
 
   dataCollector.start();
+  systemMonitor.start(1000); // Collect system metrics every second
 }
 
 if (require.main === module) {

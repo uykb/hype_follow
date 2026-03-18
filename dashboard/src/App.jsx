@@ -13,9 +13,10 @@ import FollowedUsers from './components/FollowedUsers';
 import LogsPanel from './components/LogsPanel';
 import EquityChart from './components/EquityChart';
 import TradeHistory from './components/TradeHistory';
+import SystemMonitor from './components/SystemMonitor';
 
 function App() {
-  const { snapshot, logs, connected, lastUpdate } = useWebSocket();
+  const { snapshot, logs, systemData, connected, lastUpdate } = useWebSocket();
 
   if (!snapshot) {
     return (
@@ -45,6 +46,9 @@ function App() {
         />
 
         <Container maxWidth="xl" sx={{ mt: 3 }}>
+          {/* System Monitor */}
+          <SystemMonitor systemData={systemData} />
+
           {/* Top Stats Row */}
           <Grid container spacing={2} sx={{ mb: 3 }}>
             <Grid item xs={6} sm={6} md={3}>

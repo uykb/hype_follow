@@ -5,6 +5,7 @@ const WS_URL = window.location.origin.replace(/^http/, 'ws');
 export const useWebSocket = () => {
   const [snapshot, setSnapshot] = useState(null);
   const [logs, setLogs] = useState([]);
+  const [systemData, setSystemData] = useState(null);
   const [connected, setConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(null);
 
@@ -35,6 +36,8 @@ export const useWebSocket = () => {
               setLogs(msg.data);
             } else if (msg.type === 'log') {
               setLogs(prev => [msg.data, ...prev].slice(0, 100));
+            } else if (msg.type === 'system') {
+              setSystemData(msg.data);
             }
         } catch (e) {
             console.error("Error parsing WS message", e);
@@ -61,5 +64,5 @@ export const useWebSocket = () => {
     };
   }, []);
 
-  return { snapshot, logs, connected, lastUpdate };
+  return { snapshot, logs, systemData, connected, lastUpdate };
 };
