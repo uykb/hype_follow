@@ -335,25 +335,33 @@ class OrderExecutor {
               hlSellOrders.sort((a, b) => parseFloat(b.limitPx) - parseFloat(a.limitPx));
               const tpOrder = hlSellOrders[0];
               
-              logger.info(`[OrderExecutor] Creating TP order: SELL ${followSize} @ ${tpOrder.limitPx}`);
+              // Get actual Binance position for TP quantity (not HL ratio)
+              const binancePosition = await binanceClient.getPositionDetails('HYPE');
+              const tpQuantity = binancePosition ? Math.abs(binancePosition.amount) : 0;
               
-              try {
-                const tpLimitOrder = await binanceClient.createLimitOrder('HYPE', 'A', parseFloat(tpOrder.limitPx), followSize, true);
-                if (tpLimitOrder && tpLimitOrder.orderId) {
-                  const symbol = binanceClient.getBinanceSymbol('HYPE');
-                  await orderMapper.saveMapping(userAddress, tpOrder.oid, tpLimitOrder.orderId, symbol);
-                  await store.set(`exposure:tp:HYPE`, tpLimitOrder.orderId.toString());
-                  await store.set(`martingale:last_tp:${userAddress}:HYPE`, JSON.stringify({
-                    oid: tpOrder.oid.toString(),
-                    price: tpOrder.limitPx,
-                    quantity: followSize,
-                    orderId: tpLimitOrder.orderId.toString()
-                  }), 'EX', 86400);
-                  
-                  logger.info(`[OrderExecutor] Created TP order: ${tpLimitOrder.orderId}`);
+              if (tpQuantity > 0) {
+                logger.info(`[OrderExecutor] Creating TP order: SELL ${tpQuantity} @ ${tpOrder.limitPx} (Binance position)`);
+                
+                try {
+                  const tpLimitOrder = await binanceClient.createLimitOrder('HYPE', 'A', parseFloat(tpOrder.limitPx), tpQuantity, true);
+                  if (tpLimitOrder && tpLimitOrder.orderId) {
+                    const symbol = binanceClient.getBinanceSymbol('HYPE');
+                    await orderMapper.saveMapping(userAddress, tpOrder.oid, tpLimitOrder.orderId, symbol);
+                    await store.set(`exposure:tp:HYPE`, tpLimitOrder.orderId.toString());
+                    await store.set(`martingale:last_tp:${userAddress}:HYPE`, JSON.stringify({
+                      oid: tpOrder.oid.toString(),
+                      price: tpOrder.limitPx,
+                      quantity: tpQuantity,
+                      orderId: tpLimitOrder.orderId.toString()
+                    }), 'EX', 86400);
+                    
+                    logger.info(`[OrderExecutor] Created TP order: ${tpLimitOrder.orderId}`);
+                  }
+                } catch (tpError) {
+                  logger.error(`[OrderExecutor] Failed to create TP order`, tpError);
                 }
-              } catch (tpError) {
-                logger.error(`[OrderExecutor] Failed to create TP order`, tpError);
+              } else {
+                logger.info(`[OrderExecutor] No Binance position, skipping TP order creation`);
               }
             }
           }
