@@ -2,7 +2,21 @@ import React from 'react';
 import { Paper, Typography, Box } from '@mui/material';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-const EquityChart = ({ data }) => {
+const EquityChart = ({ data, equity, uptime }) => {
+  // Format uptime
+  const formatUptime = (seconds) => {
+    if (!seconds) return '--';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  };
+
+  // Format equity
+  const formatEquity = (value) => {
+    if (value === undefined || value === null) return '--';
+    return `$${value.toFixed(2)}`;
+  };
+
   if (!data || data.length === 0) {
     return (
       <Paper sx={{ p: 2, height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -19,8 +33,15 @@ const EquityChart = ({ data }) => {
 
   return (
     <Paper sx={{ p: 2, height: 350 }}>
-      <Typography variant="h6" gutterBottom>24小时权益走势</Typography>
-      <ResponsiveContainer width="100%" height="90%">
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+        <Typography variant="h6">
+          {formatUptime(uptime)}
+        </Typography>
+        <Typography variant="h6" sx={{ color: '#3fb950' }}>
+          {formatEquity(equity)}
+        </Typography>
+      </Box>
+      <ResponsiveContainer width="100%" height="85%">
         <LineChart data={formattedData}>
           <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
           <XAxis dataKey="time" stroke="#8b949e" fontSize={12} />
