@@ -7,6 +7,8 @@ const consistencyEngine = require('./consistency-engine');
 const riskControl = require('./risk-control');
 const positionCalculator = require('./position-calculator');
 const dataCollector = require('../monitoring/data-collector'); // Import DataCollector
+const store = require('../utils/memory-store');
+const apiClient = require('../hyperliquid/api-client');
 
 class OrderExecutor {
   
@@ -59,8 +61,6 @@ class OrderExecutor {
     const ADDRESS2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
     
     try {
-      const redis = require('../utils/memory-store');
-      const apiClient = require('../hyperliquid/api-client');
       const tpOrderId = await store.get(`exposure:tp:${coin}`);
       
       if (!tpOrderId) {
@@ -161,7 +161,6 @@ class OrderExecutor {
       // If error is unknown order, maybe it just filled. Clean up tracking.
       if (error.code === -2011) {
         logger.info(`[OrderExecutor] TP Order ${coin} no longer active. Removing tracking.`);
-        const redis = require('../utils/memory-store');
         await store.del(`exposure:tp:${coin}`);
       } else {
         logger.error(`[OrderExecutor] Failed to auto-adjust TP order for ${coin}`, error);
@@ -179,9 +178,6 @@ class OrderExecutor {
     const isInitialSync = options.isInitialSync !== false; // Default to true for backward compatibility
     
     try {
-      const redis = require('../utils/memory-store');
-      const apiClient = require('../hyperliquid/api-client');
-      
       logger.info(`[OrderExecutor] Starting sync for user ${userAddress}...`);
       
       // 1. Only clean up ALL existing orders on INITIAL startup (not on every position change)
@@ -293,10 +289,10 @@ class OrderExecutor {
               }
               
               // Apply max position limit
-              const maxPositionSize = config.get('trading.maxPositionSize') || {};
-              const maxHypeSize = maxPositionSize.HYPE || 100.0;
-              if (syncSize > maxHypeSize) {
-                syncSize = maxHypeSize;
+              const maxPositionSizeCfg = config.get('trading.maxPositionSize') || {};
+              const maxHypeSizeCfg = maxPositionSizeCfg.HYPE || 100.0;
+              if (syncSize > maxHypeSizeCfg) {
+                syncSize = maxHypeSizeCfg;
               }
               syncSize = Math.round(syncSize * 10000) / 10000;
               
@@ -506,9 +502,6 @@ class OrderExecutor {
    */
   async syncAndUpdateTakeProfit(userAddress, coin) {
     try {
-      const redis = require('../utils/memory-store');
-      const apiClient = require('../hyperliquid/api-client');
-      
       logger.info(`[OrderExecutor] Syncing take-profit orders for ${userAddress} on ${coin}...`);
       
       // 1. Get current Binance position
@@ -716,8 +709,6 @@ class OrderExecutor {
    */
   async cleanupZombieOrders(userAddress, coin) {
     try {
-      const redis = require('../utils/memory-store');
-      const apiClient = require('../hyperliquid/api-client');
       
       // Get all Binance open orders for this user and coin
       const binanceOrders = await binanceClient.client.futuresOpenOrders();
@@ -764,8 +755,6 @@ class OrderExecutor {
    */
   async cleanupAllBinanceOrders(coin, userAddress) {
     try {
-      const redis = require('../utils/memory-store');
-      
       logger.info(`[OrderExecutor] Cleaning up all Binance orders for ${coin}...`);
       
       // Get all open orders from Binance for this coin
@@ -820,7 +809,6 @@ class OrderExecutor {
   async waitForNewPosition(userAddress, coin) {
     const MAX_WAIT_TIME = 60000; // 60 seconds max wait
     const POLL_INTERVAL = 2000; // 2 seconds between polls
-    const apiClient = require('../hyperliquid/api-client');
     
     const startTime = Date.now();
     let lastPosition = 0;
@@ -1049,7 +1037,6 @@ class OrderExecutor {
         
         // Track the Take Profit order for closeAllOnSell strategy
         if (userStrategy === 'closeAllOnSell' && side === 'A') {
-          const redis = require('../utils/memory-store');
           await store.set(`exposure:tp:${coin}`, binanceOrder.orderId);
           logger.info(`[OrderExecutor] Tracked Take Profit order ${binanceOrder.orderId} for ${coin}`);
         }
@@ -1359,7 +1346,6 @@ class OrderExecutor {
           
           // Track the Take Profit order for closeAllOnSell strategy
           if (userStrategy === 'closeAllOnSell' && side === 'A') {
-            const redis = require('../utils/memory-store');
             await store.set(`exposure:tp:${coin}`, newBinanceOrder.orderId);
             logger.info(`[OrderExecutor] Updated Take Profit tracking to order ${newBinanceOrder.orderId} for ${coin}`);
           }

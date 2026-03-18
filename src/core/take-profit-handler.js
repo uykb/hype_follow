@@ -136,8 +136,11 @@ class TakeProfitHandler {
     logger.info('[TPHandler] Starting cleanup process...');
     
     try {
-      // 1. Cancel all Binance orders for this coin
+      // 1. Cancel all Binance orders for this coin (包括所有类型的订单)
       await this.cancelAllBinanceOrders(coin);
+      
+      // 1b. 再次检查并清理可能遗漏的SELL订单（包括非reduceOnly的）
+      await this.cleanupAllSellOrders(coin);
       
       // 2. Clear all in-memory mappings
       await this.clearAllMemoryMappings(coin);
@@ -165,6 +168,11 @@ class TakeProfitHandler {
       await orderMapper.clearAllMappings();
       
       logger.info('[TPHandler] Cleanup completed successfully');
+      
+      // 8. 等待HL数据更新（重要：HL止盈触发后可能需要时间更新订单状态）
+      logger.info('[TPHandler] Waiting 10s for HL data to update before restart...');
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
       logger.info('[TPHandler] Exiting process for clean restart...');
       logger.info('[TPHandler] Docker will restart this container (ensure restart policy is set)');
       
@@ -175,6 +183,35 @@ class TakeProfitHandler {
       logger.error('[TPHandler] Error during cleanup', error);
       // Still exit to allow restart
       process.exit(1);
+    }
+  }
+
+  /**
+   * 清理所有SELL订单（包括非reduceOnly的，防止反向开仓）
+   * @param {string} coin 
+   */
+  async cleanupAllSellOrders(coin) {
+    try {
+      const symbol = binanceClient.getBinanceSymbol(coin);
+      const openOrders = await binanceClient.client.futuresOpenOrders({ symbol });
+      
+      // 过滤出所有SELL订单（不仅仅是reduceOnly的）
+      const sellOrders = openOrders.filter(o => o.side === 'SELL');
+      
+      if (sellOrders.length > 0) {
+        logger.info(`[TPHandler] Found ${sellOrders.length} SELL orders to cleanup for ${symbol}`);
+        
+        for (const order of sellOrders) {
+          try {
+            await binanceClient.cancelOrder(symbol, order.orderId);
+            logger.info(`[TPHandler] Cancelled SELL order ${order.orderId} (${order.origQty} @ ${order.price})`);
+          } catch (cancelError) {
+            logger.warn(`[TPHandler] Could not cancel SELL order ${order.orderId}: ${cancelError.message}`);
+          }
+        }
+      }
+    } catch (error) {
+      logger.error(`[TPHandler] Error cleaning up SELL orders for ${coin}`, error);
     }
   }
 

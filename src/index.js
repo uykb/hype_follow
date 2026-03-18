@@ -13,6 +13,7 @@ const positionTracker = require('./core/position-tracker');
 const consistencyEngine = require('./core/consistency-engine');
 const orderExecutor = require('./core/order-executor');
 const takeProfitHandler = require('./core/take-profit-handler');
+const tpValidator = require('./core/tp-validator');
 
 // Event Serialization (Prevent Race Conditions)
 const orderQueues = new Map();
@@ -133,16 +134,35 @@ async function main() {
   }
 
   // 2b. Initial sync for address 2 (Martingale strategy)
+  // 多次同步以处理HL数据延迟问题
   const ADDRESS2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
   if (followedUsers && followedUsers.includes(ADDRESS2)) {
     logger.info('[Main] Starting initial sync for address 2 (Martingale)...');
+    
+    // 第一次同步
     await orderExecutor.syncUserOrders(ADDRESS2);
+    
+    // 等待后第二次同步（处理HL数据延迟）
+    logger.info('[Main] Waiting 3s for second sync...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    await orderExecutor.syncUserOrders(ADDRESS2, { isInitialSync: false });
+    
+    // 等待后第三次同步（确保所有数据已同步）
+    logger.info('[Main] Waiting 5s for third sync...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    await orderExecutor.syncUserOrders(ADDRESS2, { isInitialSync: false });
+    
+    logger.info('[Main] Initial sync sequence completed');
   }
 
   // 2c. Initialize take-profit position tracking and start monitoring
   await takeProfitHandler.initializePositionTracking();
   takeProfitHandler.startPositionMonitoring();
   logger.info('[Main] Take-profit monitoring started');
+  
+  // 2d. Start TP Validator (确保止盈单正确性)
+  tpValidator.start();
+  logger.info('[Main] TP validator started');
 
   // 3. Start Order Validator (Cleanups)
   orderValidator.start();

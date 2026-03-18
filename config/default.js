@@ -75,7 +75,11 @@ module.exports = {
       positionZeroThreshold: parseFloat(process.env.TP_POSITION_THRESHOLD) || 0.01,
       // How often to check for TP trigger (in milliseconds)
       checkIntervalMs: parseInt(process.env.TP_CHECK_INTERVAL) || 3000
-    }
+    },
+    
+    // TP Validator configuration
+    // Ensures take-profit orders are always in sync with position
+    tpValidationIntervalMs: parseInt(process.env.TP_VALIDATION_INTERVAL) || 10000 // 10 seconds
   },
   monitoring: {
     enabled: true,
