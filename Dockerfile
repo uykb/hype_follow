@@ -1,10 +1,5 @@
 FROM node:20-slim
 
-# Install Redis
-RUN apt-get update && \
-    apt-get install -y redis-server && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 COPY package*.json ./
@@ -24,9 +19,6 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # Environment variables
 ENV NODE_ENV=production
 ENV MONITORING_PORT=49618
-# Force Redis to use localhost since it's now in the same container
-ENV REDIS_HOST=127.0.0.1
-ENV REDIS_PORT=6379
 ENV BINANCE_TESTNET=false
 
 EXPOSE 49618

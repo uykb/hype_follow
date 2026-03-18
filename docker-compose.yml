@@ -5,13 +5,5 @@ services:
     build: .
     restart: always
     env_file: .env
-    environment:
-      - REDIS_HOST=127.0.0.1
-      - REDIS_PORT=6379
     ports:
       - "49618:49618"
-    volumes:
-      - redis_data:/var/lib/redis
-
-volumes:
-  redis_data:

@@ -7,7 +7,6 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "monitor": "node src/monitoring/api-server.js",
-    "reset-auth": "node scripts/reset-auth.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -21,10 +20,6 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
-    "ioredis": "^5.9.1",
-    "jsonwebtoken": "^9.0.3",
-    "otpauth": "^9.5.0",
-    "qrcode": "^1.5.4",
     "ws": "^8.19.0"
   },
   "devDependencies": {
