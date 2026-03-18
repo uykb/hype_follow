@@ -59,9 +59,9 @@ class OrderExecutor {
     const ADDRESS2 = '0xdc899ed4a80e7bbe7c86307715507c828901f196';
     
     try {
-      const redis = require('../utils/redis');
+      const redis = require('../utils/memory-store');
       const apiClient = require('../hyperliquid/api-client');
-      const tpOrderId = await redis.get(`exposure:tp:${coin}`);
+      const tpOrderId = await store.get(`exposure:tp:${coin}`);
       
       if (!tpOrderId) {
         logger.debug(`[OrderExecutor] No tracked TP order found for ${coin} to adjust.`);
@@ -80,7 +80,7 @@ class OrderExecutor {
         try {
           const symbol = binanceClient.getBinanceSymbol(coin);
           await binanceClient.cancelOrder(symbol, tpOrderId);
-          await redis.del(`exposure:tp:${coin}`);
+          await store.del(`exposure:tp:${coin}`);
           logger.info(`[OrderExecutor] Position is 0. Cancelled TP order ${tpOrderId}`);
         } catch (cancelError) {
           logger.debug(`[OrderExecutor] Could not cancel TP order`, cancelError.message);
@@ -98,7 +98,7 @@ class OrderExecutor {
         try {
           const symbol = binanceClient.getBinanceSymbol(coin);
           await binanceClient.cancelOrder(symbol, tpOrderId);
-          await redis.del(`exposure:tp:${coin}`);
+          await store.del(`exposure:tp:${coin}`);
           logger.info(`[OrderExecutor] Cancelled TP order ${tpOrderId} (no SELL orders in HL)`);
         } catch (cancelError) {
           logger.debug(`[OrderExecutor] Could not cancel TP order`, cancelError.message);
@@ -147,8 +147,8 @@ class OrderExecutor {
         await orderMapper.saveMapping(userAddress, latestTpOid, newBinanceOrder.orderId, symbol);
         
         // Update Tracking
-        await redis.set(`exposure:tp:${coin}`, newBinanceOrder.orderId);
-        await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+        await store.set(`exposure:tp:${coin}`, newBinanceOrder.orderId);
+        await store.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
           oid: latestTpOid.toString(),
           price: latestTpPrice.toString(),
           quantity: absPos,
@@ -161,8 +161,8 @@ class OrderExecutor {
       // If error is unknown order, maybe it just filled. Clean up tracking.
       if (error.code === -2011) {
         logger.info(`[OrderExecutor] TP Order ${coin} no longer active. Removing tracking.`);
-        const redis = require('../utils/redis');
-        await redis.del(`exposure:tp:${coin}`);
+        const redis = require('../utils/memory-store');
+        await store.del(`exposure:tp:${coin}`);
       } else {
         logger.error(`[OrderExecutor] Failed to auto-adjust TP order for ${coin}`, error);
       }
@@ -179,7 +179,7 @@ class OrderExecutor {
     const isInitialSync = options.isInitialSync !== false; // Default to true for backward compatibility
     
     try {
-      const redis = require('../utils/redis');
+      const redis = require('../utils/memory-store');
       const apiClient = require('../hyperliquid/api-client');
       
       logger.info(`[OrderExecutor] Starting sync for user ${userAddress}...`);
@@ -210,7 +210,7 @@ class OrderExecutor {
       
       logger.info(`[OrderExecutor] Current Binance position for HYPE: ${currentPos}`);
       
-      await redis.set(`martingale:last_position:${userAddress}`, currentPos.toString(), 'EX', 86400);
+      await store.set(`martingale:last_position:${userAddress}`, currentPos.toString(), 'EX', 86400);
       
       // 3. Get all open orders from Hyperliquid
       let hlOrders = await apiClient.getUserOpenOrders(userAddress, 'HYPE');
@@ -219,7 +219,7 @@ class OrderExecutor {
       const buyOrders = hlOrders ? hlOrders.filter(o => o.side === 'B') : [];
       
       if (hlOrders && hlOrders.length > 0) {
-        await redis.set(`martingale:last_hl_orders:${userAddress}`, JSON.stringify(hlOrders), 'EX', 86400);
+        await store.set(`martingale:last_hl_orders:${userAddress}`, JSON.stringify(hlOrders), 'EX', 86400);
       }
       
       // 4. ONLY FOR ADDRESS2: Check HL position status if no position on Binance
@@ -312,7 +312,7 @@ class OrderExecutor {
                   await orderMapper.saveMapping(userAddress, targetOrder.oid, limitOrder.orderId, symbol);
                   
                   // Track this sync order in Redis for future updates
-                  await redis.set(`martingale:synced_order:${userAddress}:HYPE`, JSON.stringify({
+                  await store.set(`martingale:synced_order:${userAddress}:HYPE`, JSON.stringify({
                     hlOid: targetOrder.oid.toString(),
                     binanceOrderId: limitOrder.orderId.toString(),
                     price: limitPrice,
@@ -342,8 +342,8 @@ class OrderExecutor {
                 if (tpLimitOrder && tpLimitOrder.orderId) {
                   const symbol = binanceClient.getBinanceSymbol('HYPE');
                   await orderMapper.saveMapping(userAddress, tpOrder.oid, tpLimitOrder.orderId, symbol);
-                  await redis.set(`exposure:tp:HYPE`, tpLimitOrder.orderId.toString());
-                  await redis.set(`martingale:last_tp:${userAddress}:HYPE`, JSON.stringify({
+                  await store.set(`exposure:tp:HYPE`, tpLimitOrder.orderId.toString());
+                  await store.set(`martingale:last_tp:${userAddress}:HYPE`, JSON.stringify({
                     oid: tpOrder.oid.toString(),
                     price: tpOrder.limitPx,
                     quantity: followSize,
@@ -498,7 +498,7 @@ class OrderExecutor {
    */
   async syncAndUpdateTakeProfit(userAddress, coin) {
     try {
-      const redis = require('../utils/redis');
+      const redis = require('../utils/memory-store');
       const apiClient = require('../hyperliquid/api-client');
       
       logger.info(`[OrderExecutor] Syncing take-profit orders for ${userAddress} on ${coin}...`);
@@ -516,7 +516,7 @@ class OrderExecutor {
       const hlOrders = await apiClient.getUserOpenOrders(userAddress, coin);
       
       // 2.1 Get the last known TP info from Redis to check if TP changed
-      const lastTpInfoStr = await redis.get(`martingale:last_tp:${userAddress}:${coin}`);
+      const lastTpInfoStr = await store.get(`martingale:last_tp:${userAddress}:${coin}`);
       const lastTpInfo = lastTpInfoStr ? JSON.parse(lastTpInfoStr) : null;
       
       // 3. Find the take-profit order (sell order with highest price)
@@ -558,14 +558,14 @@ class OrderExecutor {
       }
       
       // 4. Get existing TP order ID from Redis
-      const existingTpOrderId = await redis.get(`exposure:tp:${coin}`);
+      const existingTpOrderId = await store.get(`exposure:tp:${coin}`);
       
       if (!tpOrder) {
         // No TP order in HL, cancel existing TP if any
         if (existingTpOrderId) {
           try {
             await binanceClient.cancelOrder(binanceClient.getBinanceSymbol(coin), existingTpOrderId);
-            await redis.del(`exposure:tp:${coin}`);
+            await store.del(`exposure:tp:${coin}`);
             logger.info(`[OrderExecutor] Cancelled TP order ${existingTpOrderId} (no TP in HL)`);
           } catch (err) {
             logger.warn(`[OrderExecutor] Failed to cancel TP order`, err);
@@ -573,7 +573,7 @@ class OrderExecutor {
         }
         
         // Update last TP info
-        await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({ oid: null, price: null, orderId: null }), 'EX', 86400);
+        await store.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({ oid: null, price: null, orderId: null }), 'EX', 86400);
         return;
       }
       
@@ -586,7 +586,7 @@ class OrderExecutor {
         if (existingTpOrderId) {
           try {
             await binanceClient.cancelOrder(binanceClient.getBinanceSymbol(coin), existingTpOrderId);
-            await redis.del(`exposure:tp:${coin}`);
+            await store.del(`exposure:tp:${coin}`);
             logger.info(`[OrderExecutor] Cancelled TP order ${existingTpOrderId} (no position)`);
           } catch (err) {
             logger.warn(`[OrderExecutor] Failed to cancel TP order`, err);
@@ -615,10 +615,10 @@ class OrderExecutor {
         
         if (binanceOrder && binanceOrder.orderId) {
           // Update TP tracking
-          await redis.set(`exposure:tp:${coin}`, binanceOrder.orderId.toString());
+          await store.set(`exposure:tp:${coin}`, binanceOrder.orderId.toString());
           
           // Update last TP info (including quantity)
-          await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+          await store.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
             oid: tpOrder.oid.toString(),
             price: tpOrder.limitPx,
             quantity: currentPos, // Store the position quantity
@@ -637,7 +637,7 @@ class OrderExecutor {
           logger.info(`[OrderExecutor] ReduceOnly rejected, TP order may already exist. Checking existing order...`);
           
           // Check if we already have a TP order in Redis that might work
-          const existingTpOrderId = await redis.get(`exposure:tp:${coin}`);
+          const existingTpOrderId = await store.get(`exposure:tp:${coin}`);
           if (existingTpOrderId) {
             try {
               const existingOrder = await binanceClient.client.futuresGetOrder({
@@ -648,7 +648,7 @@ class OrderExecutor {
               if (existingOrder && existingOrder.status === 'NEW') {
                 logger.info(`[OrderExecutor] Existing TP order ${existingTpOrderId} is active, keeping it.`);
                 // Update the last tp info to prevent future sync attempts
-                await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+                await store.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
                   oid: tpOrder.oid.toString(),
                   price: tpOrder.limitPx,
                   quantity: currentPos,
@@ -666,7 +666,7 @@ class OrderExecutor {
           if (existingTpOrderId) {
             try {
               await binanceClient.cancelOrder(binanceClient.getBinanceSymbol(coin), existingTpOrderId);
-              await redis.del(`exposure:tp:${coin}`);
+              await store.del(`exposure:tp:${coin}`);
             } catch (cancelErr) {
               logger.debug(`[OrderExecutor] Could not cancel existing TP`, cancelErr.message);
             }
@@ -678,8 +678,8 @@ class OrderExecutor {
           );
           
           if (retryOrder && retryOrder.orderId) {
-            await redis.set(`exposure:tp:${coin}`, retryOrder.orderId.toString());
-            await redis.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
+            await store.set(`exposure:tp:${coin}`, retryOrder.orderId.toString());
+            await store.set(`martingale:last_tp:${userAddress}:${coin}`, JSON.stringify({
               oid: tpOrder.oid.toString(),
               price: tpOrder.limitPx,
               quantity: currentPos,
@@ -708,7 +708,7 @@ class OrderExecutor {
    */
   async cleanupZombieOrders(userAddress, coin) {
     try {
-      const redis = require('../utils/redis');
+      const redis = require('../utils/memory-store');
       const apiClient = require('../hyperliquid/api-client');
       
       // Get all Binance open orders for this user and coin
@@ -756,7 +756,7 @@ class OrderExecutor {
    */
   async cleanupAllBinanceOrders(coin, userAddress) {
     try {
-      const redis = require('../utils/redis');
+      const redis = require('../utils/memory-store');
       
       logger.info(`[OrderExecutor] Cleaning up all Binance orders for ${coin}...`);
       
@@ -781,20 +781,20 @@ class OrderExecutor {
       
       // Clean up Redis mappings for this coin (all mappings with this coin symbol)
       // Get all mapping keys
-      const keys = await redis.keys(`map:h2b:${userAddress}:*`);
+      const keys = await store.keys(`map:h2b:${userAddress}:*`);
       for (const key of keys) {
-        const val = await redis.get(key);
+        const val = await store.get(key);
         if (val) {
           const parsed = JSON.parse(val);
           if (parsed.symbol === binanceClient.getBinanceSymbol(coin)) {
-            await redis.del(key);
+            await store.del(key);
             logger.debug(`[OrderExecutor] Cleaned up mapping: ${key}`);
           }
         }
       }
       
       // Clean up TP tracking
-      await redis.del(`exposure:tp:${coin}`);
+      await store.del(`exposure:tp:${coin}`);
       logger.info(`[OrderExecutor] Cleaned up TP tracking for ${coin}`);
       
     } catch (error) {
@@ -1041,8 +1041,8 @@ class OrderExecutor {
         
         // Track the Take Profit order for closeAllOnSell strategy
         if (userStrategy === 'closeAllOnSell' && side === 'A') {
-          const redis = require('../utils/redis');
-          await redis.set(`exposure:tp:${coin}`, binanceOrder.orderId);
+          const redis = require('../utils/memory-store');
+          await store.set(`exposure:tp:${coin}`, binanceOrder.orderId);
           logger.info(`[OrderExecutor] Tracked Take Profit order ${binanceOrder.orderId} for ${coin}`);
         }
       
@@ -1277,7 +1277,7 @@ class OrderExecutor {
     
     // Acquire lock to prevent race conditions
     const lockKey = `orderLock:${oid}`;
-    const acquired = await require('../utils/redis').set(lockKey, 'true', 'NX', 'EX', 10);
+    const acquired = await require('../utils/memory-store').set(lockKey, 'true', 'NX', 'EX', 10);
     
     if (!acquired) {
       logger.debug(`[OrderExecutor] Order update for ${oid} locked, skipping.`);
@@ -1351,8 +1351,8 @@ class OrderExecutor {
           
           // Track the Take Profit order for closeAllOnSell strategy
           if (userStrategy === 'closeAllOnSell' && side === 'A') {
-            const redis = require('../utils/redis');
-            await redis.set(`exposure:tp:${coin}`, newBinanceOrder.orderId);
+            const redis = require('../utils/memory-store');
+            await store.set(`exposure:tp:${coin}`, newBinanceOrder.orderId);
             logger.info(`[OrderExecutor] Updated Take Profit tracking to order ${newBinanceOrder.orderId} for ${coin}`);
           }
           

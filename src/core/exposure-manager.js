@@ -1,6 +1,6 @@
 const config = require('config');
 const logger = require('../utils/logger');
-const redis = require('../utils/redis');
+const store = require('../utils/memory-store');
 const binanceClient = require('../binance/api-client');
 const hyperApiClient = require('../hyperliquid/api-client');
 

@@ -4,7 +4,7 @@
  * Handles the detection and cleanup when take-profit is triggered.
  * When TP is hit, this module:
  * 1. Cleans up all Binance pending orders
- * 2. Clears all Redis mappings
+ * 2. Clears all in-memory mappings
  * 3. Exits the process (Docker restart policy will restart container)
  * 
  * Docker restart policy required:
@@ -17,9 +17,11 @@
 
 const logger = require('../utils/logger');
 const config = require('config');
-const redis = require('../utils/redis');
+const store = require('../utils/memory-store');
 const binanceClient = require('../binance/api-client');
 const orderMapper = require('./order-mapper');
+const positionTracker = require('./position-tracker');
+const consistencyEngine = require('./consistency-engine');
 
 class TakeProfitHandler {
   constructor() {
@@ -86,13 +88,13 @@ class TakeProfitHandler {
         const position = await binanceClient.getPositionDetails(coin);
         const currentPos = position ? Math.abs(position.amount) : 0;
         
-        // Get last known position from Redis
+        // Get last known position from memory store
         const lastPosKey = `tp:lastPosition:${coin}`;
-        const lastPosStr = await redis.get(lastPosKey);
+        const lastPosStr = await store.get(lastPosKey);
         const lastPos = lastPosStr ? parseFloat(lastPosStr) : null;
         
         // Get tracked TP order
-        const tpOrderId = await redis.get(`exposure:tp:${coin}`);
+        const tpOrderId = await store.get(`exposure:tp:${coin}`);
         
         // Check if position went from > threshold to ~0
         if (lastPos !== null && lastPos > this.positionZeroThreshold && currentPos < this.positionZeroThreshold) {
@@ -109,7 +111,7 @@ class TakeProfitHandler {
         
         // Update last known position
         if (currentPos >= this.positionZeroThreshold) {
-          await redis.set(lastPosKey, currentPos.toString(), 'EX', 86400);
+          await store.set(lastPosKey, currentPos.toString());
         }
         
       } catch (error) {
@@ -137,24 +139,30 @@ class TakeProfitHandler {
       // 1. Cancel all Binance orders for this coin
       await this.cancelAllBinanceOrders(coin);
       
-      // 2. Clear all Redis mappings
-      await this.clearAllRedisMappings(coin);
+      // 2. Clear all in-memory mappings
+      await this.clearAllMemoryMappings(coin);
       
       // 3. Clear TP tracking
-      await redis.del(`exposure:tp:${coin}`);
-      await redis.del(`tp:lastPosition:${coin}`);
+      await store.del(`exposure:tp:${coin}`);
+      await store.del(`tp:lastPosition:${coin}`);
       
       // 4. Clear martingale tracking
       const userStrategies = config.get('trading.userStrategies') || {};
       for (const userAddress of Object.keys(userStrategies)) {
-        await redis.del(`martingale:last_position:${userAddress}`);
-        await redis.del(`martingale:last_tp:${userAddress}:${coin}`);
-        await redis.del(`martingale:last_hl_orders:${userAddress}`);
-        await redis.del(`martingale:synced_order:${userAddress}:${coin}`);
+        await store.del(`martingale:last_position:${userAddress}`);
+        await store.del(`martingale:last_tp:${userAddress}:${coin}`);
+        await store.del(`martingale:last_hl_orders:${userAddress}`);
+        await store.del(`martingale:synced_order:${userAddress}:${coin}`);
       }
       
       // 5. Clear pending deltas
-      await redis.del(`pendingDelta:${coin}`);
+      await positionTracker.clearAllDeltas();
+      
+      // 6. Clear order history and locks
+      await consistencyEngine.clearAllHistory();
+      
+      // 7. Clear order mappings
+      await orderMapper.clearAllMappings();
       
       logger.info('[TPHandler] Cleanup completed successfully');
       logger.info('[TPHandler] Exiting process for clean restart...');
@@ -199,19 +207,19 @@ class TakeProfitHandler {
   }
 
   /**
-   * Clear all Redis order mappings
+   * Clear all in-memory mappings
    * @param {string} coin 
    */
-  async clearAllRedisMappings(coin) {
+  async clearAllMemoryMappings(coin) {
     try {
       const symbol = binanceClient.getBinanceSymbol(coin);
       
       // Get all mapping keys
-      const h2bKeys = await redis.keys('map:h2b:*');
-      const b2hKeys = await redis.keys('map:b2h:*');
-      const timestampKeys = await redis.keys('timestamp:order:*');
-      const historyKeys = await redis.keys('orderHistory:*');
-      const lockKeys = await redis.keys('orderLock:*');
+      const h2bKeys = await store.keys('map:h2b:*');
+      const b2hKeys = await store.keys('map:b2h:*');
+      const timestampKeys = await store.keys('timestamp:order:*');
+      const historyKeys = await store.keys('orderHistory:*');
+      const lockKeys = await store.keys('orderLock:*');
       
       let deletedCount = 0;
       
@@ -219,28 +227,28 @@ class TakeProfitHandler {
       for (const key of [...h2bKeys, ...b2hKeys, ...timestampKeys, ...historyKeys, ...lockKeys]) {
         try {
           // Check if it's for this coin
-          const value = await redis.get(key);
+          const value = await store.get(key);
           if (value) {
             const parsed = JSON.parse(value);
             if (parsed.symbol === symbol || !parsed.symbol) {
-              await redis.del(key);
+              await store.del(key);
               deletedCount++;
             }
           } else {
             // Key without value (like lock keys), delete anyway
-            await redis.del(key);
+            await store.del(key);
             deletedCount++;
           }
         } catch (parseError) {
           // Delete anyway
-          await redis.del(key);
+          await store.del(key);
           deletedCount++;
         }
       }
       
-      logger.info(`[TPHandler] Cleared ${deletedCount} Redis mappings`);
+      logger.info(`[TPHandler] Cleared ${deletedCount} in-memory mappings`);
     } catch (error) {
-      logger.error('[TPHandler] Error clearing Redis mappings', error);
+      logger.error('[TPHandler] Error clearing in-memory mappings', error);
       throw error;
     }
   }
@@ -258,7 +266,7 @@ class TakeProfitHandler {
         const currentPos = position ? Math.abs(position.amount) : 0;
         
         const lastPosKey = `tp:lastPosition:${coin}`;
-        await redis.set(lastPosKey, currentPos.toString(), 'EX', 86400);
+        await store.set(lastPosKey, currentPos.toString());
         
         logger.info(`[TPHandler] Initialized position tracking for ${coin}: ${currentPos}`);
       } catch (error) {

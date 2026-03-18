@@ -19,11 +19,6 @@ module.exports = {
       '0xdc899ed4a80e7bbe7c86307715507c828901f196'
     ]
   },
-  redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT) || 6379,
-    password: process.env.REDIS_PASSWORD || undefined,
-  },
   riskControl: {
     // Only HYPE trading pair is supported
     supportedCoins: ['HYPE'],

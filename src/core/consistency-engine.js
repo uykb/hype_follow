@@ -1,4 +1,4 @@
-const redis = require('../utils/redis');
+const store = require('../utils/memory-store');
 const logger = require('../utils/logger');
 const config = require('config');
 const orderMapper = require('./order-mapper');
@@ -12,12 +12,13 @@ class ConsistencyEngine {
     const followedUsers = config.get('hyperliquid.followedUsers');
     this.primaryTargetAddress = followedUsers && followedUsers.length > 0 ? followedUsers[0] : null;
   }
+  
   /**
    * Check if Hyperliquid order has already been processed
    * @param {string} oid 
    */
   async isOrderProcessed(oid) {
-    const processed = await redis.hget(`orderHistory:${oid}`, 'processed');
+    const processed = await store.hget(`orderHistory:${oid}`, 'processed');
     return processed === 'true';
   }
 
@@ -28,14 +29,11 @@ class ConsistencyEngine {
    */
   async markOrderProcessed(oid, details) {
     try {
-      const pipeline = redis.pipeline();
-      pipeline.hset(`orderHistory:${oid}`, {
+      await store.hset(`orderHistory:${oid}`, {
         ...details,
         processed: 'true',
         processedAt: Date.now()
       });
-      pipeline.expire(`orderHistory:${oid}`, 604800); // 7 days
-      await pipeline.exec();
     } catch (error) {
       logger.error(`Failed to mark order ${oid} as processed`, error);
     }
@@ -49,9 +47,9 @@ class ConsistencyEngine {
    */
   async shouldProcessHyperOrder(userAddress, oid) {
     // 1. Atomic check-and-set to prevent race conditions (Duplicate Orders)
-    // We use a temporary "processing" flag in Redis
+    // We use a temporary "processing" flag in memory store
     const lockKey = `orderLock:${userAddress}:${oid}`;
-    const acquired = await redis.set(lockKey, 'true', 'NX', 'EX', 30); // 30s lock
+    const acquired = await store.set(lockKey, 'true', 'NX', 'EX', 30); // 30s lock
     
     if (!acquired) {
       logger.debug(`Order ${userAddress}:${oid} is already being processed or locked, skipping`);
@@ -90,7 +88,7 @@ class ConsistencyEngine {
    * @param {string} oid 
    */
   async releaseOrderLock(userAddress, oid) {
-    await redis.del(`orderLock:${userAddress}:${oid}`);
+    await store.del(`orderLock:${userAddress}:${oid}`);
   }
 
   /**
@@ -105,7 +103,7 @@ class ConsistencyEngine {
     const key = `orphanFill:${userAddress}:${hyperOid}`;
     
     // Check if already recorded to avoid double-counting
-    const exists = await redis.exists(key);
+    const exists = await store.exists(key);
     if (exists) return;
 
     // Calculate Master Equivalent Size
@@ -115,21 +113,15 @@ class ConsistencyEngine {
       userAddress
     );
 
-    const pipeline = redis.pipeline();
-    pipeline.hset(key, {
+    await store.hset(key, {
       coin: fillDetails.coin,
       side: fillDetails.side,
       size: fillDetails.size,
       price: fillDetails.price,
       binanceOrderId: fillDetails.binanceOrderId,
-      occurredAt: Date.now()
+      occurredAt: Date.now(),
+      masterSize: masterSize
     });
-    
-    // Save master equivalent size in orphan record for later reference (e.g. if resolved later)
-    pipeline.hset(key, 'masterSize', masterSize);
-    pipeline.expire(key, 604800); // 7 days TTL
-
-    await pipeline.exec();
 
     // Calculate Signed Size based on Master Size
     const signedChange = fillDetails.side === 'B' ? -masterSize : masterSize;
@@ -147,7 +139,7 @@ class ConsistencyEngine {
    */
   async handleHyperliquidFill(userAddress, oid) {
     const orphanKey = `orphanFill:${userAddress}:${oid}`;
-    const orphan = await redis.hgetall(orphanKey);
+    const orphan = await store.hgetall(orphanKey);
     
     if (orphan && orphan.coin) {
       // HL finally filled. 
@@ -169,8 +161,27 @@ class ConsistencyEngine {
 
       await positionTracker.addPendingDelta(orphan.coin, signedChange);
       
-      await redis.del(orphanKey);
+      await store.del(orphanKey);
       logger.info(`Orphan fill resolved (Hype Caught Up): Hype OID ${oid}, Delta adjusted by ${signedChange}`);
+    }
+  }
+
+  /**
+   * Clear all order history and locks (used for take-profit cleanup)
+   */
+  async clearAllHistory() {
+    try {
+      const historyKeys = await store.keys('orderHistory:*');
+      const lockKeys = await store.keys('orderLock:*');
+      const orphanKeys = await store.keys('orphanFill:*');
+      
+      for (const key of [...historyKeys, ...lockKeys, ...orphanKeys]) {
+        await store.del(key);
+      }
+      
+      logger.info('[ConsistencyEngine] Cleared all order history and locks');
+    } catch (error) {
+      logger.error('Failed to clear all history', error);
     }
   }
 }

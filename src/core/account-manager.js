@@ -1,5 +1,5 @@
 const config = require('config');
-const redis = require('../utils/redis');
+const store = require('../utils/memory-store');
 const hyperApiClient = require('../hyperliquid/api-client');
 const binanceClient = require('../binance/api-client');
 const logger = require('../utils/logger');
@@ -23,12 +23,12 @@ class AccountManager {
     
     // Check cache first
     try {
-      const cached = await redis.get(cacheKey);
+      const cached = await store.get(cacheKey);
       if (cached) {
         return parseFloat(cached);
       }
     } catch (err) {
-      logger.warn('Redis get failed in getHyperliquidTotalEquity', err);
+      logger.warn('Memory store get failed in getHyperliquidTotalEquity', err);
     }
 
     // Call API
@@ -42,11 +42,11 @@ class AccountManager {
 
       const totalEquity = parseFloat(accountData.marginSummary.accountValue);
 
-      // Cache result
+      // Cache result with TTL
       try {
-        await redis.set(cacheKey, totalEquity, 'EX', this.cacheTTL);
+        await store.set(cacheKey, totalEquity.toString(), null, 'EX', this.cacheTTL);
       } catch (err) {
-        logger.warn('Redis set failed in getHyperliquidTotalEquity', err);
+        logger.warn('Memory store set failed in getHyperliquidTotalEquity', err);
       }
 
       logger.info(`Hyperliquid account value: ${totalEquity} for ${address}`);
@@ -66,12 +66,12 @@ class AccountManager {
     
     // Check cache first
     try {
-      const cached = await redis.get(cacheKey);
+      const cached = await store.get(cacheKey);
       if (cached) {
         return parseFloat(cached);
       }
     } catch (err) {
-      logger.warn('Redis get failed in getBinanceTotalEquity', err);
+      logger.warn('Memory store get failed in getBinanceTotalEquity', err);
     }
 
     try {
@@ -82,11 +82,11 @@ class AccountManager {
       const account = await binanceClient.futuresAccountInfo();
       const totalEquity = parseFloat(account.totalMarginBalance);
 
-      // Cache result
+      // Cache result with TTL
       try {
-        await redis.set(cacheKey, totalEquity, 'EX', this.cacheTTL);
+        await store.set(cacheKey, totalEquity.toString(), null, 'EX', this.cacheTTL);
       } catch (err) {
-        logger.warn('Redis set failed in getBinanceTotalEquity', err);
+        logger.warn('Memory store set failed in getBinanceTotalEquity', err);
       }
 
       logger.info(`Binance total equity: ${totalEquity}`);

@@ -1,5 +1,5 @@
 const config = require('config');
-const redis = require('../utils/redis');
+const store = require('../utils/memory-store');
 const logger = require('../utils/logger');
 const accountManager = require('../core/account-manager');
 const binanceClient = require('../binance/api-client');
@@ -86,10 +86,6 @@ class DataCollector extends EventEmitter {
       }
     }
 
-    // Persist to Redis (List) - Optional for MVP, but good for persistence
-    // await redis.lpush('stats:trade_history', JSON.stringify(trade));
-    // await redis.ltrim('stats:trade_history', 0, 99);
-    
     this.emit('update', this.getSnapshot());
   }
 
@@ -112,10 +108,6 @@ class DataCollector extends EventEmitter {
         if (this.cache.history.equity.length > 1440) {
           this.cache.history.equity.shift();
         }
-        
-        // Persist to Redis
-        // await redis.lpush('stats:equity_history', JSON.stringify(point));
-        // await redis.ltrim('stats:equity_history', 0, 1439);
       }
     } catch (e) {
       logger.warn('Failed to collect history snapshot', e);
@@ -127,7 +119,7 @@ class DataCollector extends EventEmitter {
       // 1. Collect Account Data
       await this.collectAccountData();
       
-      // 2. Collect Order Mappings from Redis
+      // 2. Collect Order Mappings from memory store
       await this.collectOrderMappings();
 
       this.emit('update', this.getSnapshot());
@@ -178,10 +170,10 @@ class DataCollector extends EventEmitter {
 
   async collectOrderMappings() {
     try {
-      const keys = await redis.keys('map:h2b:*');
+      const keys = await store.keys('map:h2b:*');
       const mappings = [];
       for (const key of keys) {
-        const val = await redis.get(key);
+        const val = await store.get(key);
         if (val) {
           const parsed = JSON.parse(val);
           mappings.push({

@@ -1,11 +1,10 @@
-const redis = require('../utils/redis');
+const store = require('../utils/memory-store');
 const logger = require('../utils/logger');
 
-// Key prefixes
+// Key prefixes (now using in-memory store, but keeping prefix convention for clarity)
 const HYPER_TO_BINANCE = 'map:h2b:';
 const BINANCE_TO_HYPER = 'map:b2h:';
 const ORDER_TIMESTAMP = 'timestamp:order:';
-const EXPIRY = 60 * 60 * 24 * 7; // 7 days retention
 
 class OrderMapper {
   /**
@@ -17,17 +16,15 @@ class OrderMapper {
    */
   async saveMapping(userAddress, hyperOid, binanceOrderId, symbol) {
     try {
-      const pipeline = redis.pipeline();
       const hKey = `${userAddress}:${hyperOid}`;
       
-      // Store bi-directional mapping
-      pipeline.set(`${HYPER_TO_BINANCE}${hKey}`, JSON.stringify({ orderId: binanceOrderId, symbol, user: userAddress }), 'EX', EXPIRY);
-      pipeline.set(`${BINANCE_TO_HYPER}${binanceOrderId}`, JSON.stringify({ oid: hyperOid, symbol, user: userAddress }), 'EX', EXPIRY);
+      // Store bi-directional mapping (no TTL needed for in-memory, cleared on restart)
+      await store.set(`${HYPER_TO_BINANCE}${hKey}`, JSON.stringify({ orderId: binanceOrderId, symbol, user: userAddress }));
+      await store.set(`${BINANCE_TO_HYPER}${binanceOrderId}`, JSON.stringify({ oid: hyperOid, symbol, user: userAddress }));
       
       // Store timestamp for timeout/validation tracking
-      pipeline.set(`${ORDER_TIMESTAMP}${hKey}`, Date.now().toString(), 'EX', EXPIRY);
+      await store.set(`${ORDER_TIMESTAMP}${hKey}`, Date.now().toString());
       
-      await pipeline.exec();
       logger.debug(`Mapped Hyperliquid OID ${hKey} to Binance OrderID ${binanceOrderId} with timestamp`);
     } catch (error) {
       logger.error('Failed to save order mapping', error);
@@ -43,7 +40,7 @@ class OrderMapper {
   async getBinanceOrder(userAddress, hyperOid) {
     try {
       const hKey = `${userAddress}:${hyperOid}`;
-      const data = await redis.get(`${HYPER_TO_BINANCE}${hKey}`);
+      const data = await store.get(`${HYPER_TO_BINANCE}${hKey}`);
       return data ? JSON.parse(data) : null;
     } catch (error) {
       logger.error('Failed to get Binance order', error);
@@ -58,7 +55,7 @@ class OrderMapper {
    */
   async getHyperliquidOrder(binanceOrderId) {
     try {
-      const data = await redis.get(`${BINANCE_TO_HYPER}${binanceOrderId}`);
+      const data = await store.get(`${BINANCE_TO_HYPER}${binanceOrderId}`);
       if (!data) return null;
       return JSON.parse(data);
     } catch (error) {
@@ -75,7 +72,7 @@ class OrderMapper {
   async getOrderTimestamp(userAddress, hyperOid) {
     try {
       const hKey = `${userAddress}:${hyperOid}`;
-      const ts = await redis.get(`${ORDER_TIMESTAMP}${hKey}`);
+      const ts = await store.get(`${ORDER_TIMESTAMP}${hKey}`);
       return ts ? parseInt(ts) : null;
     } catch (error) {
       return null;
@@ -92,18 +89,35 @@ class OrderMapper {
       const mappedOrder = await this.getBinanceOrder(userAddress, hyperOid);
       const hKey = `${userAddress}:${hyperOid}`;
       
-      const pipeline = redis.pipeline();
-      pipeline.del(`${HYPER_TO_BINANCE}${hKey}`);
-      pipeline.del(`${ORDER_TIMESTAMP}${hKey}`);
+      await store.del(`${HYPER_TO_BINANCE}${hKey}`);
+      await store.del(`${ORDER_TIMESTAMP}${hKey}`);
       
       if (mappedOrder && mappedOrder.orderId) {
-        pipeline.del(`${BINANCE_TO_HYPER}${mappedOrder.orderId}`);
+        await store.del(`${BINANCE_TO_HYPER}${mappedOrder.orderId}`);
       }
       
-      await pipeline.exec();
       logger.debug(`Deleted mapping for Hyperliquid OID ${hKey}`);
     } catch (error) {
       logger.error('Failed to delete order mapping', error);
+    }
+  }
+
+  /**
+   * Clear all mappings (used for take-profit cleanup)
+   */
+  async clearAllMappings() {
+    try {
+      const h2bKeys = await store.keys('map:h2b:*');
+      const b2hKeys = await store.keys('map:b2h:*');
+      const tsKeys = await store.keys('timestamp:order:*');
+      
+      for (const key of [...h2bKeys, ...b2hKeys, ...tsKeys]) {
+        await store.del(key);
+      }
+      
+      logger.info('[OrderMapper] Cleared all order mappings');
+    } catch (error) {
+      logger.error('Failed to clear all mappings', error);
     }
   }
 }

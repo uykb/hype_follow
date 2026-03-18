@@ -2,21 +2,29 @@ const OTPAuth = require('otpauth');
 const QRCode = require('qrcode');
 const jwt = require('jsonwebtoken');
 const config = require('config');
-const redis = require('./redis');
+const store = require('./memory-store');
 const logger = require('./logger');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'hypefollow-secret-key-123';
-const REDIS_TOTP_KEY = 'admin:totp:secret';
+const TOTP_KEY = 'admin:totp:secret';
 
 /**
  * Auth Utility for TOTP and JWT
+ * Note: TOTP secret is stored in memory and will be lost on restart.
+ * For production, consider using a persistent secret from environment variable.
  */
 class AuthUtil {
+  constructor() {
+    // Try to load secret from environment or use memory storage
+    this.persistentSecret = process.env.TOTP_SECRET || null;
+  }
+
   /**
    * Check if TOTP is configured
    */
   async isConfigured() {
-    const secret = await redis.get(REDIS_TOTP_KEY);
+    if (this.persistentSecret) return true;
+    const secret = await store.get(TOTP_KEY);
     return !!secret;
   }
 
@@ -65,18 +73,19 @@ class AuthUtil {
   }
 
   /**
-   * Save secret to Redis
+   * Save secret to memory store
    */
   async saveSecret(secretBase32) {
-    await redis.set(REDIS_TOTP_KEY, secretBase32);
-    logger.info('TOTP Secret configured and saved to Redis');
+    await store.set(TOTP_KEY, secretBase32);
+    logger.info('TOTP Secret configured and saved to memory store');
   }
 
   /**
-   * Get secret from Redis
+   * Get secret from memory store or environment
    */
   async getSecret() {
-    return await redis.get(REDIS_TOTP_KEY);
+    if (this.persistentSecret) return this.persistentSecret;
+    return await store.get(TOTP_KEY);
   }
 
   /**

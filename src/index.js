@@ -1,6 +1,5 @@
 const config = require('config');
 const logger = require('./utils/logger');
-const redis = require('./utils/redis');
 const hyperWs = require('./hyperliquid/ws-client');
 const binanceClient = require('./binance/api-client');
 const orderMapper = require('./core/order-mapper');
@@ -306,7 +305,6 @@ async function main() {
     orderValidator.stop();
     takeProfitHandler.stopPositionMonitoring();
     hyperWs.close();
-    redis.disconnect();
     process.exit(0);
   });
 }
