@@ -143,6 +143,24 @@ class TPValidator {
       const apiClient = require('../hyperliquid/api-client');
       const symbol = binanceClient.getBinanceSymbol(coin);
       
+      // 先取消所有现有的止盈单（防止重复创建）
+      const openOrders = await binanceClient.client.futuresOpenOrders({ symbol });
+      const existingTpOrders = openOrders.filter(o => o.side === 'SELL' && o.reduceOnly === true);
+      
+      if (existingTpOrders.length > 0) {
+        logger.info(`[TPValidator] ${coin}: Found ${existingTpOrders.length} existing TP orders, cancelling before creating new one...`);
+        for (const order of existingTpOrders) {
+          try {
+            await binanceClient.cancelOrder(symbol, order.orderId);
+            logger.info(`[TPValidator] Cancelled existing TP order ${order.orderId}`);
+          } catch (err) {
+            logger.warn(`[TPValidator] Failed to cancel TP order ${order.orderId}: ${err.message}`);
+          }
+        }
+        // 等待取消完成
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
       // 获取HL最高价格卖单（止盈单）
       let retries = 3;
       let tpOrder = null;
