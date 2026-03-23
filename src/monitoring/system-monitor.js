@@ -4,6 +4,7 @@
  */
 const fs = require('fs').promises;
 const path = require('path');
+const https = require('https');
 const EventEmitter = require('events');
 const logger = require('../utils/logger');
 
@@ -15,6 +16,8 @@ class SystemMonitor extends EventEmitter {
     this.lastDiskStats = {};
     this.lastNetStats = {};
     this.lastUpdate = null;
+    this.publicIP = null;
+    this.publicIPLastFetch = 0;
   }
 
   /**
@@ -45,17 +48,84 @@ class SystemMonitor extends EventEmitter {
   }
 
   /**
+   * Get public IP address from external services
+   * Uses multiple services for reliability with fallback
+   */
+  async getPublicIP() {
+    // Cache IP for 5 minutes to avoid excessive external requests
+    const now = Date.now();
+    if (this.publicIP && (now - this.publicIPLastFetch) < 300000) {
+      return this.publicIP;
+    }
+
+    const services = [
+      { hostname: 'api.ipify.org', path: '/?format=json' },
+      { hostname: 'ipinfo.io', path: '/json' },
+      { hostname: 'api64.ipify.org', path: '/?format=json' }
+    ];
+
+    for (const service of services) {
+      try {
+        const ip = await this.fetchIPFromService(service.hostname, service.path);
+        if (ip) {
+          this.publicIP = ip;
+          this.publicIPLastFetch = now;
+          return ip;
+        }
+      } catch (err) {
+        logger.debug(`Failed to get IP from ${service.hostname}: ${err.message}`);
+      }
+    }
+
+    return this.publicIP || 'N/A';
+  }
+
+  /**
+   * Fetch IP from a specific service
+   */
+  fetchIPFromService(hostname, path) {
+    return new Promise((resolve, reject) => {
+      const req = https.get({
+        hostname,
+        path,
+        timeout: 3000,
+        headers: { 'User-Agent': 'HypeFollow-SystemMonitor/1.0' }
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            resolve(json.ip || json.origin);
+          } catch {
+            // Some services return plain text
+            resolve(data.trim());
+          }
+        });
+      });
+
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Request timeout'));
+      });
+      req.setTimeout(3000);
+    });
+  }
+
+  /**
    * Collect all system metrics
    */
   async collect() {
-    const [cpu, memory, load, network, disk, uptime, processes] = await Promise.all([
+    const [cpu, memory, load, network, disk, uptime, processes, publicIP] = await Promise.all([
       this.getCpu(),
       this.getMemory(),
       this.getLoad(),
       this.getNetwork(),
       this.getDisk(),
       this.getUptime(),
-      this.getProcesses()
+      this.getProcesses(),
+      this.getPublicIP()
     ]);
 
     this.lastUpdate = Date.now();
@@ -67,7 +137,8 @@ class SystemMonitor extends EventEmitter {
       network,
       disk,
       uptime,
-      processes
+      processes,
+      publicIP
     };
 
     return this.lastMetrics;

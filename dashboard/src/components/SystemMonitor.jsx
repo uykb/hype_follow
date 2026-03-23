@@ -17,7 +17,8 @@ import {
   Speed as SpeedIcon,
   DeviceThermostat as TempIcon,
   ExpandMore as ExpandMoreIcon,
-  ExpandLess as ExpandLessIcon
+  ExpandLess as ExpandLessIcon,
+  Language as LanguageIcon
 } from '@mui/icons-material';
 import GaugeChart, { BarGauge } from './GaugeChart';
 
@@ -68,10 +69,11 @@ const SystemMonitor = ({ systemData }) => {
     network: { interfaces: [] },
     disk: { disks: [], filesystems: [] },
     uptime: { seconds: 0, formatted: '0m' },
-    processes: { running: 0, blocked: 0 }
+    processes: { running: 0, blocked: 0 },
+    publicIP: null
   };
 
-  const { cpu, memory, load, network, disk, uptime, processes } = data;
+  const { cpu, memory, load, network, disk, uptime, processes, publicIP } = data;
 
   // Calculate total network throughput
   const networkStats = useMemo(() => {
@@ -107,6 +109,18 @@ const SystemMonitor = ({ systemData }) => {
               variant="outlined"
               sx={{ ml: 1 }}
             />
+            {publicIP && publicIP !== 'N/A' && (
+              <Tooltip title="公网IP地址">
+                <Chip 
+                  icon={<LanguageIcon sx={{ fontSize: '14px !important' }} />}
+                  label={publicIP} 
+                  size="small" 
+                  color="info"
+                  variant="outlined"
+                  sx={{ ml: 0.5 }}
+                />
+              </Tooltip>
+            )}
           </Box>
           <IconButton onClick={() => setExpanded(!expanded)} size="small">
             {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
